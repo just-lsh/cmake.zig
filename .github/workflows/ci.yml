@@ -18,10 +18,37 @@ jobs:
           - windows-11-arm
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: mlugg/setup-zig@v2
+      - uses: actions/checkout@v7
+
+      - name: Cache zig
+        uses: actions/cache@v6
         with:
-          version: 0.17.1
+          path: zig/cache
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('zig/version') }}
+
+      - name: Download zig
+        if: runner.os != 'Windows'
+        run: ./zig/download.sh
+
+      - name: Download zig
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: zig\download.cmd
+
+      - name: Add zig to PATH
+        shell: bash
+        run: echo "$GITHUB_WORKSPACE/zig" >> "$GITHUB_PATH"
+
+      # Zig unpacks dependencies, including the lazily fetched CMake, Ninja and
+      # Python, into zig-pkg/ next to the build root being built, i.e. test/.
+      - name: Cache Zig packages
+        uses: actions/cache@v6
+        with:
+          path: test/zig-pkg
+          key: zig-pkg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('zig/version') }}-${{ hashFiles('**/build.zig.zon') }}
+          restore-keys: |
+            zig-pkg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('zig/version') }}-
+
       # test: the native target, with a shared library, and runs the program;
       # cross: every cross target, from every host.
       - run: zig build test cross --summary all

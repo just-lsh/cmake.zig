@@ -1,0 +1,12 @@
+*
+!.gitignore
+!download.cmd
+!download.sh
+!version
+!checksums.txt
+
+!zls/
+!zls/download.cmd
+!zls/download.sh
+!zls/version
+!zls/checksums.txt

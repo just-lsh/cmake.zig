@@ -91,6 +91,19 @@ Python script in a `Run` step.
 
 ## Development
 
+The Zig and ZLS releases used for development and CI are pinned in `zig/`. They
+are not checked in, download them first:
+
+```sh
+./zig/download.sh && ./zig/zls/download.sh       # Linux, macOS
+zig\download.cmd && zig\zls\download.cmd         # Windows
+```
+
+This installs `zig/zig` and `zig/zls/zls`; put `zig/` on your `PATH` (`shell.nix`
+does that on NixOS). To
+update a release, follow the steps at the top of `zig/download.sh` and
+`zig/zls/download.sh`.
+
 ```sh
 cd test && zig build test cross   # build the test projects, natively and cross
 zig build update-tools -- cmake=4.4.5 ninja=1.13.2 python=3.13.18+20261026 pkgconf=3.0.10

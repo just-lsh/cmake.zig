@@ -1,0 +1,15 @@
+* text=auto eol=lf
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+*.a binary
+*.dll binary
+*.dylib binary
+*.exe binary
+*.lib binary
+*.o binary
+*.obj binary
+*.pdb binary
+*.so binary
+*.so.* binary
