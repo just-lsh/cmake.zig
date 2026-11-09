@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+          - macos-15
+          - macos-15-intel
+          - windows-2025
+          - windows-11-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.1
+      # test: the native target, with a shared library, and runs the program;
+      # cross: every cross target, from every host.
+      - run: zig build test cross --summary all
+        working-directory: test
