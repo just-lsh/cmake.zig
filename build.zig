@@ -6,15 +6,18 @@
 //!
 //!   const cmake_zig = @import("cmake_zig");
 //!
-//!   const lib = cmake_zig.addProject(b, b.dependency("cmake_zig", .{}), .{
+//!   const dep = b.dependency("cmake_zig", .{});
+//!   // Fetches everything in one pass; see fetchTools().
+//!   if (!cmake_zig.fetchTools(dep, .{})) return;
+//!   const lib = cmake_zig.addProject(b, dep, .{
 //!       .source_dir = b.path("lib"),
 //!       .target = target,
 //!       .optimize = optimize,
 //!       .defines = &.{.{ "BUILD_SHARED_LIBS", .{ .boolean = true } }},
-//!   }) orelse return; // null until the host's tools are fetched
+//!   }).?;
 //!   b.installDirectory(.{ .source_dir = lib.install_dir.?, .install_dir = .prefix, .install_subdir = "" });
 //!
-//! See addProject() and Options for the details.
+//! See fetchTools(), addProject() and Options for the details.
 const std = @import("std");
 const Build = std.Build;
 const LazyPath = Build.LazyPath;
@@ -113,7 +116,8 @@ pub const Project = struct {
 
 /// A step that configures, builds and installs a CMake project. Null until
 /// the host's tools (and pkgconf's source, if used) are fetched; zig build
-/// then re-runs the build script.
+/// then re-runs the build script. With several projects, call fetchTools()
+/// first.
 ///
 /// The build and install directories are the step's output directories, in
 /// .zig-cache/o/<hash of all inputs>: each configuration (target, optimize
@@ -122,9 +126,10 @@ pub const Project = struct {
 /// location from run to run, as CMake records absolute paths. Deleting a build
 /// directory is safe; it is configured again.
 pub fn addProject(b: *Build, dep: *Build.Dependency, options: Options) ?Project {
-    const tools = options.tools orelse hostTools(dep) orelse return null;
+    if (!fetchTools(dep, .{ .host_tools = options.tools == null, .pkg_config = options.pkg_config })) return null;
+    const tools = options.tools orelse hostTools(dep).?;
     const helpers = getHelpers(dep.builder);
-    const pkg_config = if (options.pkg_config) helpers.pkgConfig() orelse return null else null;
+    const pkg_config = if (options.pkg_config) helpers.pkgConfig().? else null;
 
     const target = options.target.result;
     const host = b.graph.host.result;
@@ -308,6 +313,34 @@ pub fn cmakeSystemProcessor(target: std.Target) []const u8 {
             else => @tagName(arch),
         },
     };
+}
+
+pub const FetchOptions = struct {
+    /// The host's CMake, Ninja and Python; false if every project passes
+    /// Options.tools.
+    host_tools: bool = true,
+    /// pkgconf's source, if any project sets Options.pkg_config.
+    pkg_config: bool = false,
+};
+
+/// Asks for every lazily fetched dependency that the projects will need, and
+/// returns whether they are all fetched; if not, zig build fetches them and
+/// re-runs the build script. Call it before the first addProject() when
+/// projects need different dependencies (e.g. only a later one sets
+/// .pkg_config), so that they are all fetched in one pass:
+///
+///   if (!cmake_zig.fetchTools(dep, .{ .pkg_config = true })) return;
+///
+/// Otherwise the first addProject() returns null before a later one asks for
+/// its dependencies, and they are fetched in a second pass, which can fail
+/// with HttpConnectionClosing: zig's fetcher reuses a pooled connection that
+/// the server closed while the first pass was downloading, and does not
+/// retry (https://codeberg.org/ziglang/zig/issues/37195).
+pub fn fetchTools(dep: *Build.Dependency, options: FetchOptions) bool {
+    // Both are asked for before returning.
+    const tools = !options.host_tools or hostTools(dep) != null;
+    const pkg_config = !options.pkg_config or getHelpers(dep.builder).pkgConfig() != null;
+    return tools and pkg_config;
 }
 
 /// The host's CMake, Ninja and Python. Null until they are fetched.

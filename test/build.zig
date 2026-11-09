@@ -35,6 +35,9 @@ pub fn build(b: *std.Build) void {
     const cross_step = b.step("cross", "Build for each cross target with a static library");
     b.default_step = test_step;
 
+    // hello does not use pkg-config, so without this its addProject() would
+    // return null before consumer's asks for pkgconf; see fetchTools().
+    if (!cmake_zig.fetchTools(dep, .{ .pkg_config = true })) return;
     const native = addTest(b, dep, check_exe, test_step, target, optimize, true) orelse return;
     const host = b.graph.host.result;
     if (target.result.os.tag == host.os.tag and target.result.cpu.arch == host.cpu.arch) {

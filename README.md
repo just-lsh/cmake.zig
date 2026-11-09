@@ -21,13 +21,16 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const dep = b.dependency("cmake_zig", .{});
+    // CMake, Ninja, Python and (for .pkg_config) pkgconf's source are fetched
+    // lazily; this asks for all of them at once and is false until they are.
+    if (!cmake_zig.fetchTools(dep, .{ .pkg_config = true })) return;
 
     const lib = cmake_zig.addProject(b, dep, .{
         .source_dir = b.path("lib"),
         .target = target,
         .optimize = optimize,
         .defines = &.{.{ "BUILD_SHARED_LIBS", .{ .boolean = true } }},
-    }) orelse return; // null until the host's tools are fetched
+    }).?; // null only if something it needs is not fetched yet
 
     // A second project, finding the first with find_package() or pkg-config.
     const app = cmake_zig.addProject(b, dep, .{
@@ -37,7 +40,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .pkg_config = true,
         .defines = &.{.{ "CMAKE_PREFIX_PATH", .{ .paths = &.{lib.install_dir.?} } }},
-    }) orelse return;
+    }).?;
 
     b.installDirectory(.{ .source_dir = app.install_dir.?, .install_dir = .prefix, .install_subdir = "" });
 }
@@ -46,6 +49,11 @@ pub fn build(b: *std.Build) void {
 `addProject` returns one step that configures (when needed), builds
 (`cmake --build`) and installs (`cmake --install`) the project. Its
 `install_dir` and `build_dir` are ordinary `LazyPath`s that depend on that step.
+Call `fetchTools` before the first `addProject`: otherwise the first project
+returns null before a later one asks for what it needs (e.g. pkgconf), which is
+then fetched in a second pass. Zig's fetcher can fail that pass with
+`HttpConnectionClosing`, as it reuses a connection the server has closed
+([ziglang/zig#37195](https://codeberg.org/ziglang/zig/issues/37195)).
 See the doc comments in [build.zig](build.zig) for all options. `hostTools(dep)`
 gives the CMake, Ninja and Python executables for other uses, e.g. running a
 Python script in a `Run` step.
