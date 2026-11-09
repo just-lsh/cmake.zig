@@ -1,0 +1,89 @@
+.{
+    .name = .cmake_zig,
+    .version = "0.1.0",
+    .fingerprint = 0x7bc88a37ce6631d8,
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{
+        .cmake_linux_aarch64 = .{
+            .url = "https://github.com/Kitware/CMake/releases/download/v4.4.5/cmake-4.4.5-linux-aarch64.tar.gz",
+            .hash = "N-V-__8AAMe3OQcfr2sIFOyh0053trgFzti-ioG9UD_IdiJd",
+            .lazy = true,
+        },
+        .cmake_windows_x86_64 = .{
+            .url = "https://github.com/Kitware/CMake/releases/download/v4.4.5/cmake-4.4.5-windows-x86_64.zip",
+            .hash = "N-V-__8AAPLZigg5sbvvxGm_-msyisTfC51TpXxP7zNZ0sJ4",
+            .lazy = true,
+        },
+        .cmake_windows_aarch64 = .{
+            .url = "https://github.com/Kitware/CMake/releases/download/v4.4.5/cmake-4.4.5-windows-arm64.zip",
+            .hash = "N-V-__8AAArqcAiXySyLFRoXQXUW5A43HGJSFTGTtFdpGTXX",
+            .lazy = true,
+        },
+        .cmake_linux_x86_64 = .{
+            .url = "https://github.com/Kitware/CMake/releases/download/v4.4.5/cmake-4.4.5-linux-x86_64.tar.gz",
+            .hash = "N-V-__8AAP7kWAvB8Sz7VQ-H2TsS32GZpfIyEP2nZx7xeH_0",
+            .lazy = true,
+        },
+        .cmake_macos = .{
+            .url = "https://github.com/Kitware/CMake/releases/download/v4.4.5/cmake-4.4.5-macos-universal.tar.gz",
+            .hash = "N-V-__8AAIlSEA-hX49kdtISa7HIXS3XN39KRJpam_J0gPRt",
+            .lazy = true,
+        },
+        .ninja_linux_x86_64 = .{
+            .url = "https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-linux.zip",
+            .hash = "N-V-__8AAHBwBADCA8S0aG4cbNM0_ewoHKN43b-ef9A_nUKY",
+            .lazy = true,
+        },
+        .ninja_linux_aarch64 = .{
+            .url = "https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-linux-aarch64.zip",
+            .hash = "N-V-__8AAFAQBADr3qkgFmISK99B0ih6s9fb_r7DNxrSKlf9",
+            .lazy = true,
+        },
+        .ninja_macos = .{
+            .url = "https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-mac.zip",
+            .hash = "N-V-__8AAOCiDABBfGZOsaVxtQzJmnGrLRUtflbi5rETdy1x",
+            .lazy = true,
+        },
+        .ninja_windows_x86_64 = .{
+            .url = "https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-win.zip",
+            .hash = "N-V-__8AAAA2CQD3Thf4CpGcWA3GXLEtyL8OddAiqW5yKCp7",
+            .lazy = true,
+        },
+        .ninja_windows_aarch64 = .{
+            .url = "https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-winarm64.zip",
+            .hash = "N-V-__8AAAA4CQBBD5_zxk7WtTil_jdSsgGrmRhH8zUntUzo",
+            .lazy = true,
+        },
+        .python_linux_x86_64 = .{
+            .url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.13.18%2B20261026-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
+            .hash = "N-V-__8AAI2R6QXra70rYMHDg9HWwRcaO-N5BN1ZX2gvWXvg",
+            .lazy = true,
+        },
+        .python_linux_aarch64 = .{
+            .url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.13.18%2B20261026-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz",
+            .hash = "N-V-__8AAJNqtQTqwshqlu1O8mfxtHfzTq_Nk9j9HVH5Jiwd",
+            .lazy = true,
+        },
+        .python_macos_x86_64 = .{
+            .url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.13.18%2B20261026-x86_64-apple-darwin-install_only_stripped.tar.gz",
+            .hash = "N-V-__8AADld4AMq3L9tWrKJFNDO-KZeWqv5A2EsS8-OoU4j",
+            .lazy = true,
+        },
+        .python_macos_aarch64 = .{
+            .url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.13.18%2B20261026-aarch64-apple-darwin-install_only_stripped.tar.gz",
+            .hash = "N-V-__8AAI_a2wPDsZblNn_XTVflIIJymWxIABD0VYus3y9n",
+            .lazy = true,
+        },
+        .python_windows_x86_64 = .{
+            .url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.13.18%2B20261026-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+            .hash = "N-V-__8AAIaquwO4gtaXA9hxrs5xOIUJBoeEZEKcQOIuV5W4",
+            .lazy = true,
+        },
+        .python_windows_aarch64 = .{
+            .url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.13.18%2B20261026-aarch64-pc-windows-msvc-install_only_stripped.tar.gz",
+            .hash = "N-V-__8AAPCLyQPLJXWiBivHOcehQcaKWOv3CW5WxX5bkaQC",
+            .lazy = true,
+        },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "toolchain" },
+}
