@@ -8,6 +8,10 @@
 //! decides what is out of date, including re-running CMake when a
 //! CMakeLists.txt changes.
 //!
+//! The output of each stage goes to a log in the build directory
+//! (cmake.zig-{configure,build,install}.log) and, if the stage fails, to
+//! stderr; on success the driver prints nothing.
+//!
 //! Options:
 //!   --cmake=<exe>             CMake executable
 //!   --build-dir=<dir>         CMake build directory
@@ -41,6 +45,7 @@ const fatal = std.process.fatal;
 
 const stamp_name = "cmake.zig-stamp";
 const configure_log_name = "cmake.zig-configure.log";
+const build_log_name = "cmake.zig-build.log";
 const install_log_name = "cmake.zig-install.log";
 const tools_dir_name = "cmake.zig-tools";
 
@@ -200,7 +205,13 @@ pub fn main(init: std.process.Init) !u8 {
     var build_argv: std.ArrayList([]const u8) = .empty;
     try build_argv.appendSlice(arena, &.{ cmake_exe, "--build", build_path });
     for (targets.items) |target| try build_argv.appendSlice(arena, &.{ "--target", target });
-    if (!try run(io, build_argv.items, &env, .inherit)) return 1;
+    {
+        const log_path = try std.fs.path.join(arena, &.{ build_path, build_log_name });
+        if (!try runLogged(io, arena, build_argv.items, &env, log_path)) {
+            std.log.err("building failed; output above and in {s}", .{log_path});
+            return 1;
+        }
+    }
 
     if (install_dir != null) {
         const log_path = try std.fs.path.join(arena, &.{ build_path, install_log_name });

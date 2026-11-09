@@ -139,7 +139,12 @@ pub fn addProject(b: *Build, dep: *Build.Dependency, options: Options) ?Project 
 
     const run = Run.create(b, options.name);
     run.has_side_effects = true;
-    run.stdio = .inherit;
+    // Not .inherit: zig build holds a global lock on stderr while a step
+    // with inherited stdio runs, so projects would build one at a time. The
+    // driver keeps the tools' output in logs in the build directory and
+    // prints it to stderr only on failure, which zig build then shows.
+    run.stdio = .{ .check = .empty };
+    run.expectExitCode(0);
     run.addArtifactArg(helpers.driver);
     run.addFileArg2(tools.cmake, .{ .prefix = "--cmake=", .make_absolute = true });
     const build_dir = run.addOutputDirectoryArg2("build", .{ .prefix = "--build-dir=", .make_absolute = true });

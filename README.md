@@ -79,6 +79,9 @@ Python script in a `Run` step.
   source and only searches `CMAKE_PREFIX_PATH`. `CMAKE_INSTALL_LIBDIR` is `lib`.
   The aim is a build that does not depend on the host, not a bit-for-bit
   reproducible one.
+- **Output.** Projects build in parallel. CMake's and Ninja's output goes to
+  `cmake.zig-{configure,build,install}.log` in the build directory and is only
+  shown when a step fails.
 - **Caching.** The build and install directories are output directories of the
   step, under `.zig-cache/o/<hash>`, where the hash covers all inputs (target,
   optimize mode, defines, tools, toolchain, zig). Each configuration has its own,
