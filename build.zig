@@ -221,10 +221,14 @@ pub fn addProject(b: *Build, dep: *Build.Dependency, options: Options) ?Project 
                 name,
                 std.mem.join(arena, ";", items) catch @panic("OOM"),
             })),
-            .path => |p| run.addDirectoryArg2(p, .{ .prefix = b.fmt("--arg=-D{s}=", .{name}), .make_absolute = true }),
+            // Through --path-list, which gives CMake '/' separators on Windows.
+            .path => |p| {
+                run.addArg(b.fmt("--path-list=-D{s}=", .{name}));
+                run.addDirectoryArg2(p, .{ .prefix = "--path-item=", .make_absolute = true });
+            },
             .paths => |ps| {
-                run.addArg(b.fmt("--list=-D{s}=", .{name}));
-                for (ps) |p| run.addDirectoryArg2(p, .{ .prefix = "--item=", .make_absolute = true });
+                run.addArg(b.fmt("--path-list=-D{s}=", .{name}));
+                for (ps) |p| run.addDirectoryArg2(p, .{ .prefix = "--path-item=", .make_absolute = true });
             },
         }
     }

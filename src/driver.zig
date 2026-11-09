@@ -13,10 +13,14 @@
 //!   --build-dir=<dir>         CMake build directory
 //!   --install-dir=<dir>       install prefix; omit to skip installing
 //!   --arg=<arg>               configure argument (repeatable)
-//!   --list=<prefix>           configure argument: <prefix> followed by the
-//!                             values of the --item=<value> options after it,
-//!                             joined with ';'
-//!   --item=<value>
+//!   --path-list=<prefix>      configure argument: <prefix> followed by the
+//!                             paths of the --path-item=<path> options after
+//!                             it, joined with ';'
+//!   --path-item=<path>        on Windows, '\' becomes '/': CMake writes
+//!                             some values unescaped into quoted strings in
+//!                             generated scripts (cmake_install.cmake's
+//!                             install_name_tool -add_rpath), where '\a'
+//!                             is an invalid escape
 //!   --tool=<name>=<file>      configure argument -D<name>=<copy>, where
 //!                             <copy> is a copy of <file> in the build
 //!                             directory: a location that does not change
@@ -29,6 +33,7 @@
 //!   --env=<name>              pass this variable on (repeatable)
 //!   --set-env=<name>=<value>  (repeatable)
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const Environ = std.process.Environ;
@@ -72,10 +77,12 @@ pub fn main(init: std.process.Init) !u8 {
     var set_env: std.ArrayList([2][]const u8) = .empty;
 
     for (args[1..]) |arg| {
-        if (std.mem.startsWith(u8, arg, "--item=")) {
-            if (!list_open) fatal("--item without --list", .{});
+        if (std.mem.startsWith(u8, arg, "--path-item=")) {
+            if (!list_open) fatal("--path-item without --path-list", .{});
+            const path = try arena.dupe(u8, arg["--path-item=".len..]);
+            if (builtin.os.tag == .windows) std.mem.replaceScalar(u8, path, '\\', '/');
             const last = &configure_args.items[configure_args.items.len - 1];
-            last.* = try std.mem.concat(arena, u8, &.{ last.*, if (list_empty) "" else ";", arg["--item=".len..] });
+            last.* = try std.mem.concat(arena, u8, &.{ last.*, if (list_empty) "" else ";", path });
             list_empty = false;
             continue;
         }
@@ -88,7 +95,7 @@ pub fn main(init: std.process.Init) !u8 {
             install_dir = v;
         } else if (option(arg, "--arg=")) |v| {
             try configure_args.append(arena, v);
-        } else if (option(arg, "--list=")) |v| {
+        } else if (option(arg, "--path-list=")) |v| {
             try configure_args.append(arena, v);
             list_open = true;
             list_empty = true;
