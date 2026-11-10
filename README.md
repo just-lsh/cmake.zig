@@ -48,7 +48,8 @@ pub fn build(b: *std.Build) void {
         .install_args = &.{"--strip"},
     });
 
-    b.installDirectory(.{ .source_dir = app.install_dir, .install_dir = .prefix, .install_subdir = "" });
+    // Everything app installs, into zig-out/bin, zig-out/lib, ...
+    cmake.installArtifacts(b, app);
 }
 ```
 
@@ -56,7 +57,23 @@ pub fn build(b: *std.Build) void {
 `configure` (`cmake -S -B`), `build` (`cmake --build`) and `install`
 (`cmake --install --prefix`). `build_dir` is an output of `configure`,
 `install_dir` of `install`; zig build runs only the steps that what you use
-needs. `cmake.tools(cmake_dep)` gives the CMake, Ninja and Python executables
+needs.
+
+`cmake.installArtifacts(b, project)` copies everything a project installs into
+zig's install prefix (`zig-out/`), keeping CMake's layout;
+`cmake.addInstallArtifacts` returns that step without adding it to
+`zig build install`. To use single artifacts, a project gives their paths for the
+target, in the layout of `install(TARGETS)` without a `DESTINATION`:
+
+```zig
+b.getInstallStep().dependOn(&b.addInstallBinFile(app.executable("app"), "app").step);
+const static = lib.library("foo", .static); // lib/libfoo.a
+const shared = lib.library("foo", .shared); // lib/libfoo.so, .dylib, bin/libfoo.dll
+const link = lib.importLibrary("foo");      // lib/libfoo.dll.a on Windows
+const headers = lib.includeDir();           // include/
+```
+
+`cmake.tools(cmake_dep)` gives the CMake, Ninja and Python executables
 for other uses, e.g. running a Python script in a `Run` step.
 
 Dependency options: `python`, `pkg_config`, and `cmake_exe`, `ninja_exe`,

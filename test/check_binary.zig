@@ -1,6 +1,7 @@
 //! check-binary <file> <object format> <cpu arch>: checks that an executable
-//! has the given format (elf, coff or macho) and CPU architecture (x86_64 or
-//! aarch64), as zig names them.
+//! or shared library has the given format (elf, coff or macho) and CPU
+//! architecture (x86_64 or aarch64), as zig names them. The format archive
+//! (a static or import library) only checks the ar signature.
 const std = @import("std");
 const fatal = std.process.fatal;
 
@@ -12,6 +13,10 @@ pub fn main(init: std.process.Init) !void {
     const path, const format, const arch = .{ args[1], args[2], args[3] };
 
     const data = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(64 << 20));
+    if (std.mem.eql(u8, format, "archive")) {
+        if (!std.mem.startsWith(u8, data, "!<arch>\n")) fatal("{s}: not an ar archive", .{path});
+        return;
+    }
     if (data.len < 64) fatal("{s}: too short", .{path});
     const x86_64 = std.mem.eql(u8, arch, "x86_64");
     if (!x86_64 and !std.mem.eql(u8, arch, "aarch64")) fatal("unsupported arch {s}", .{arch});

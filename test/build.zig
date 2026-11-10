@@ -5,7 +5,8 @@
 //!                      runs the consumer if the host can
 //!   zig build cross    for each of cross_targets, with a static hello
 //!
-//! Both check the format and CPU architecture of the consumer executable.
+//! Both check the format and CPU architecture of the consumer executable and
+//! the hello library, found with Project.executable() and .library().
 const std = @import("std");
 const cmake = @import("cmake");
 
@@ -89,11 +90,32 @@ fn addTest(
         },
     });
 
-    const exe = consumer.install_dir.path(b, b.fmt("bin/consumer{s}", .{t.exeFileExt()}));
-    const check = b.addRunArtifact(check_exe);
-    check.setName(b.fmt("check consumer {s}", .{name}));
-    check.addFileArg(exe);
-    check.addArgs(&.{ @tagName(t.ofmt), @tagName(t.cpu.arch) });
-    step.dependOn(&check.step);
+    const exe = consumer.executable("consumer");
+    addCheck(b, check_exe, step, b.fmt("check consumer {s}", .{name}), exe, @tagName(t.ofmt), t);
+    if (shared) {
+        addCheck(b, check_exe, step, b.fmt("check hello {s}", .{name}), hello.library("hello", .shared), @tagName(t.ofmt), t);
+        if (t.os.tag == .windows) {
+            addCheck(b, check_exe, step, b.fmt("check hello import library {s}", .{name}), hello.importLibrary("hello"), "archive", t);
+        }
+    } else {
+        addCheck(b, check_exe, step, b.fmt("check hello {s}", .{name}), hello.library("hello", .static), "archive", t);
+    }
     return .{ .exe = exe, .hello_install_dir = hello.install_dir };
+}
+
+/// Adds a check-binary run of file (see check_binary.zig) to step.
+fn addCheck(
+    b: *std.Build,
+    check_exe: *std.Build.Step.Compile,
+    step: *std.Build.Step,
+    name: []const u8,
+    file: std.Build.LazyPath,
+    format: []const u8,
+    t: std.Target,
+) void {
+    const check = b.addRunArtifact(check_exe);
+    check.setName(name);
+    check.addFileArg(file);
+    check.addArgs(&.{ format, @tagName(t.cpu.arch) });
+    step.dependOn(&check.step);
 }

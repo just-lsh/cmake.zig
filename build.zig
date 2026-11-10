@@ -155,7 +155,75 @@ pub const Project = struct {
     build_dir: LazyPath,
     /// The install prefix, an output of install.
     install_dir: LazyPath,
+    /// Options.target, for the artifact paths below.
+    target: std.Target,
+    /// The builder the steps belong to (the cmake dependency's).
+    owner: *Build,
+
+    // Paths of installed artifacts, for the layout of `install(TARGETS)`
+    // without a DESTINATION: executables and DLLs in bin/, libraries in lib/,
+    // headers in include/. A project that installs elsewhere can use
+    // install_dir.path() directly. Names follow what CMake does with zig cc,
+    // which is GNU-like on every target, also on Windows (MinGW).
+
+    /// An executable: bin/<name>, bin/<name>.exe on Windows.
+    pub fn executable(p: Project, name: []const u8) LazyPath {
+        return p.installed(p.owner.fmt("bin/{s}{s}", .{ name, p.target.exeFileExt() }));
+    }
+
+    pub const LibraryKind = enum { static, shared };
+
+    /// A library, the file to install or load at run time:
+    ///   static   lib/lib<name>.a
+    ///   shared   lib/lib<name>.so, lib/lib<name>.dylib on Apple OSes,
+    ///            bin/lib<name>.dll on Windows
+    /// To link against a shared library, use importLibrary().
+    pub fn library(p: Project, name: []const u8, kind: LibraryKind) LazyPath {
+        const b = p.owner;
+        return p.installed(switch (kind) {
+            .static => b.fmt("lib/lib{s}.a", .{name}),
+            .shared => if (p.target.os.tag == .windows)
+                b.fmt("bin/lib{s}.dll", .{name})
+            else if (p.target.os.tag.isDarwin())
+                b.fmt("lib/lib{s}.dylib", .{name})
+            else
+                b.fmt("lib/lib{s}.so", .{name}),
+        });
+    }
+
+    /// What to link against for a shared library: lib/lib<name>.dll.a on
+    /// Windows, the library itself (library(name, .shared)) elsewhere.
+    pub fn importLibrary(p: Project, name: []const u8) LazyPath {
+        if (p.target.os.tag != .windows) return p.library(name, .shared);
+        return p.installed(p.owner.fmt("lib/lib{s}.dll.a", .{name}));
+    }
+
+    /// The installed headers: include/.
+    pub fn includeDir(p: Project) LazyPath {
+        return p.installed("include");
+    }
+
+    fn installed(p: Project, sub_path: []const u8) LazyPath {
+        return p.install_dir.path(p.owner, sub_path);
+    }
 };
+
+/// Installs everything the project installs into the install prefix
+/// (zig-out/ by default) as part of `zig build install`, keeping CMake's
+/// layout: bin/, lib/, include/, ... Files from other steps at the same
+/// paths are overwritten, others are left alone.
+pub fn installArtifacts(b: *Build, project: Project) void {
+    b.getInstallStep().dependOn(&addInstallArtifacts(b, project).step);
+}
+
+/// The step of installArtifacts(), without adding it to `zig build install`.
+pub fn addInstallArtifacts(b: *Build, project: Project) *Build.Step.InstallDir {
+    return b.addInstallDirectory(.{
+        .source_dir = project.install_dir,
+        .install_dir = .prefix,
+        .install_subdir = "",
+    });
+}
 
 /// Adds the configure, build and install steps of a CMake project, built with
 /// the tools of dep (a b.dependency("cmake", ...)).
@@ -289,6 +357,8 @@ pub fn addProject(dep: *Build.Dependency, options: Options) Project {
         .install = install,
         .build_dir = build_dir,
         .install_dir = install_dir,
+        .target = target,
+        .owner = b,
     };
 }
 
