@@ -4,7 +4,7 @@
     .fingerprint = 0x47c85b1b87127023,
     .minimum_zig_version = "0.17.1",
     .dependencies = .{
-        .cmake_zig = .{ .path = ".." },
+        .cmake = .{ .path = ".." },
     },
     .paths = .{""},
 }

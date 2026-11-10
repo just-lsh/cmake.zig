@@ -1,22 +1,19 @@
-//! Configures, builds and installs one CMake project; addProject() in
-//! build.zig runs it as a single step that always runs.
+//! Runs one stage of a CMake project for the steps of addProject() in
+//! build.zig:
 //!
-//! Configuring runs only when the build directory has not been configured
-//! with the same arguments and passed-through environment variables yet (a
-//! stamp file in the build directory records them), so deleting the build
-//! directory is always safe. After that, Ninja (through cmake --build)
-//! decides what is out of date, including re-running CMake when a
-//! CMakeLists.txt changes.
+//!   driver configure   cmake -S ... -B <build-dir> <args>
+//!   driver build       cmake --build <build-dir> <args>
+//!   driver install     cmake --install <build-dir> --prefix <install-dir> <args>
 //!
 //! The output of each stage goes to a log in the build directory
-//! (cmake.zig-{configure,build,install}.log) and, if the stage fails, to
-//! stderr; on success the driver prints nothing.
+//! (cmake.zig-<stage>.log) and, if the stage fails, to stderr; on success the
+//! driver prints nothing.
 //!
 //! Options:
 //!   --cmake=<exe>             CMake executable
 //!   --build-dir=<dir>         CMake build directory
-//!   --install-dir=<dir>       install prefix; omit to skip installing
-//!   --arg=<arg>               configure argument (repeatable)
+//!   --install-dir=<dir>       install prefix (install)
+//!   --arg=<arg>               argument for the stage's cmake command (repeatable)
 //!   --path-list=<prefix>      configure argument: <prefix> followed by the
 //!                             paths of the --path-item=<path> options after
 //!                             it, joined with ';'
@@ -31,11 +28,10 @@
 //!                             when <file>'s does (zig's output paths for
 //!                             compiled C code depend on the directory zig
 //!                             build runs in)
-//!   --target=<name>           cmake --build --target <name> (repeatable)
 //!   --path=<dir>              prepended to PATH (repeatable)
 //!   --inherit-env             pass the whole environment on
-//!   --env=<name>              pass this variable on (repeatable)
 //!   --set-env=<name>=<value>  (repeatable)
+//!   --unset-env=<name>        (repeatable)
 const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
@@ -43,10 +39,6 @@ const Allocator = std.mem.Allocator;
 const Environ = std.process.Environ;
 const fatal = std.process.fatal;
 
-const stamp_name = "cmake.zig-stamp";
-const configure_log_name = "cmake.zig-configure.log";
-const build_log_name = "cmake.zig-build.log";
-const install_log_name = "cmake.zig-install.log";
 const tools_dir_name = "cmake.zig-tools";
 
 /// Passed on even when the environment is not inherited: what zig, CMake,
@@ -54,40 +46,42 @@ const tools_dir_name = "cmake.zig-tools";
 /// Windows system paths and host CPU detection) or what only affects how
 /// output looks. None of them change build results.
 const base_env = [_][]const u8{
-    "HOME",                   "TMPDIR",       "TMP",         "TEMP",
-    "TERM",                   "NO_COLOR",     "CLICOLOR_FORCE",
-    "XDG_CACHE_HOME",         "ZIG_GLOBAL_CACHE_DIR",
+    "HOME",                 "TMPDIR",               "TMP",                    "TEMP",
+    "TERM",                 "NO_COLOR",             "CLICOLOR_FORCE",         "XDG_CACHE_HOME",
+    "ZIG_GLOBAL_CACHE_DIR",
     // Windows
-    "SystemRoot",             "SystemDrive",  "windir",      "ComSpec",
-    "PATHEXT",                "USERPROFILE",  "LOCALAPPDATA", "APPDATA",
-    "NUMBER_OF_PROCESSORS",   "PROCESSOR_ARCHITECTURE", "PROCESSOR_ARCHITEW6432",
+    "SystemRoot",           "SystemDrive",            "windir",
+    "ComSpec",              "PATHEXT",              "USERPROFILE",            "LOCALAPPDATA",
+    "APPDATA",              "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "PROCESSOR_ARCHITEW6432",
 };
+
+const Stage = enum { configure, build, install };
 
 pub fn main(init: std.process.Init) !u8 {
     const io = init.io;
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
 
+    if (args.len < 2) fatal("usage: driver configure|build|install <options>", .{});
+    const stage = std.meta.stringToEnum(Stage, args[1]) orelse fatal("unknown stage: {s}", .{args[1]});
+
     var cmake: ?[]const u8 = null;
     var build_dir: ?[]const u8 = null;
     var install_dir: ?[]const u8 = null;
-    var configure_args: std.ArrayList([]const u8) = .empty;
-    var list_open = false; // the last configure argument is a --list
+    var stage_args: std.ArrayList([]const u8) = .empty;
+    var list_open = false; // the last argument is a --path-list
     var list_empty = true;
     var tools: std.ArrayList([2][]const u8) = .empty;
-    var targets: std.ArrayList([]const u8) = .empty;
     var paths: std.ArrayList([]const u8) = .empty;
     var inherit_env = false;
-    var pass_env: std.ArrayList([]const u8) = .empty;
     var set_env: std.ArrayList([2][]const u8) = .empty;
+    var unset_env: std.ArrayList([]const u8) = .empty;
 
-    for (args[1..]) |arg| {
-        if (std.mem.startsWith(u8, arg, "--path-item=")) {
+    for (args[2..]) |arg| {
+        if (option(arg, "--path-item=")) |v| {
             if (!list_open) fatal("--path-item without --path-list", .{});
-            const path = try arena.dupe(u8, arg["--path-item=".len..]);
-            if (builtin.os.tag == .windows) std.mem.replaceScalar(u8, path, '\\', '/');
-            const last = &configure_args.items[configure_args.items.len - 1];
-            last.* = try std.mem.concat(arena, u8, &.{ last.*, if (list_empty) "" else ";", path });
+            const last = &stage_args.items[stage_args.items.len - 1];
+            last.* = try std.mem.concat(arena, u8, &.{ last.*, if (list_empty) "" else ";", try cmakePath(arena, v) });
             list_empty = false;
             continue;
         }
@@ -99,25 +93,21 @@ pub fn main(init: std.process.Init) !u8 {
         } else if (option(arg, "--install-dir=")) |v| {
             install_dir = v;
         } else if (option(arg, "--arg=")) |v| {
-            try configure_args.append(arena, v);
+            try stage_args.append(arena, v);
         } else if (option(arg, "--path-list=")) |v| {
-            try configure_args.append(arena, v);
+            try stage_args.append(arena, v);
             list_open = true;
             list_empty = true;
         } else if (option(arg, "--tool=")) |v| {
-            const eq = std.mem.indexOfScalar(u8, v, '=') orelse fatal("--tool needs <name>=<file>: {s}", .{v});
-            try tools.append(arena, .{ v[0..eq], v[eq + 1 ..] });
-        } else if (option(arg, "--target=")) |v| {
-            try targets.append(arena, v);
+            try tools.append(arena, try keyValue(v, "--tool"));
         } else if (option(arg, "--path=")) |v| {
             try paths.append(arena, v);
         } else if (std.mem.eql(u8, arg, "--inherit-env")) {
             inherit_env = true;
-        } else if (option(arg, "--env=")) |v| {
-            try pass_env.append(arena, v);
         } else if (option(arg, "--set-env=")) |v| {
-            const eq = std.mem.indexOfScalar(u8, v, '=') orelse fatal("--set-env needs <name>=<value>: {s}", .{v});
-            try set_env.append(arena, .{ v[0..eq], v[eq + 1 ..] });
+            try set_env.append(arena, try keyValue(v, "--set-env"));
+        } else if (option(arg, "--unset-env=")) |v| {
+            try unset_env.append(arena, v);
         } else {
             fatal("unknown option: {s}", .{arg});
         }
@@ -125,10 +115,7 @@ pub fn main(init: std.process.Init) !u8 {
     const cmake_exe = cmake orelse fatal("missing --cmake", .{});
     const build_path = build_dir orelse fatal("missing --build-dir", .{});
 
-    // The environment, and the part of it that configuring depends on.
     var env: Environ.Map = .init(arena);
-    var stamp: std.Io.Writer.Allocating = .init(arena);
-    const w = &stamp.writer;
     if (inherit_env) {
         env = try init.environ_map.clone(arena);
         // zig build's progress pipe, for this process only.
@@ -138,19 +125,8 @@ pub fn main(init: std.process.Init) !u8 {
             if (init.environ_map.get(name)) |value| try env.put(name, value);
         }
     }
-    for (pass_env.items) |name| {
-        if (init.environ_map.get(name)) |value| {
-            try env.put(name, value);
-            try w.print("env {s}={s}\n", .{ name, value });
-        } else {
-            _ = env.swapRemove(name);
-            try w.print("env {s} unset\n", .{name});
-        }
-    }
-    for (set_env.items) |entry| {
-        try env.put(entry[0], entry[1]);
-        try w.print("env {s}={s}\n", .{ entry[0], entry[1] });
-    }
+    for (set_env.items) |entry| try env.put(entry[0], entry[1]);
+    for (unset_env.items) |name| _ = env.swapRemove(name);
     if (paths.items.len > 0) {
         var path: std.ArrayList(u8) = .empty;
         for (paths.items) |dir| {
@@ -161,66 +137,62 @@ pub fn main(init: std.process.Init) !u8 {
         try env.put("PATH", path.items);
     }
 
-    var configure_argv: std.ArrayList([]const u8) = .empty;
-    try configure_argv.appendSlice(arena, &.{ cmake_exe, "-B", build_path });
-    if (install_dir) |dir| try configure_argv.append(arena, try std.fmt.allocPrint(arena, "-DCMAKE_INSTALL_PREFIX={s}", .{dir}));
-    try configure_argv.appendSlice(arena, configure_args.items);
-
     const cwd = Io.Dir.cwd();
-    try cwd.createDirPath(io, build_path);
-    for (tools.items) |tool| {
-        const copy = try std.fs.path.join(arena, &.{ build_path, tools_dir_name, std.fs.path.basename(tool[1]) });
-        try copyIfChanged(io, arena, tool[1], copy);
-        try configure_argv.append(arena, try std.fmt.allocPrint(arena, "-D{s}={s}", .{ tool[0], copy }));
-    }
-    for (configure_argv.items) |arg| try w.print("arg {s}\n", .{arg});
-
-    const stamp_path = try std.fs.path.join(arena, &.{ build_path, stamp_name });
     const cache_path = try std.fs.path.join(arena, &.{ build_path, "CMakeCache.txt" });
-    const old_stamp = cwd.readFileAlloc(io, stamp_path, arena, .limited(1 << 20)) catch |err| switch (err) {
-        error.FileNotFound => null,
-        else => |e| return e,
-    };
-    const has_cache = if (cwd.access(io, cache_path, .{})) true else |err| switch (err) {
+    const configured = if (cwd.access(io, cache_path, .{})) true else |err| switch (err) {
         error.FileNotFound => false,
         else => |e| return e,
     };
 
-    if (!has_cache or old_stamp == null or !std.mem.eql(u8, old_stamp.?, stamp.written())) {
-        cwd.deleteFile(io, stamp_path) catch |err| switch (err) {
-            error.FileNotFound => {},
-            else => |e| return e,
-        };
-        // --fresh: configure from scratch, as in a new build directory, but
-        // keep the build outputs so Ninja only rebuilds what changed.
-        if (has_cache) try configure_argv.append(arena, "--fresh");
-        const log_path = try std.fs.path.join(arena, &.{ build_path, configure_log_name });
-        if (!try runLogged(io, arena, configure_argv.items, &env, log_path)) {
-            std.log.err("configuring failed; output above and in {s}", .{log_path});
-            return 1;
-        }
-        try cwd.writeFile(io, .{ .sub_path = stamp_path, .data = stamp.written() });
+    var argv: std.ArrayList([]const u8) = .empty;
+    switch (stage) {
+        .configure => {
+            try argv.appendSlice(arena, &.{ cmake_exe, "-B", build_path });
+            // Only after a failed attempt: configure from scratch, as in a
+            // new build directory.
+            if (configured) try argv.append(arena, "--fresh");
+            try cwd.createDirPath(io, build_path);
+            for (tools.items) |tool| {
+                const copy = try std.fs.path.join(arena, &.{ build_path, tools_dir_name, std.fs.path.basename(tool[1]) });
+                try copyIfChanged(io, arena, tool[1], copy);
+                try argv.append(arena, try std.fmt.allocPrint(arena, "-D{s}={s}", .{ tool[0], copy }));
+            }
+        },
+        .build, .install => {
+            // zig build caches the configure step, so it does not notice a
+            // deleted build directory.
+            if (!configured) fatal(
+                "{s} is not a configured CMake build directory (deleted?); delete .zig-cache to configure again",
+                .{build_path},
+            );
+            if (stage == .build) {
+                try argv.appendSlice(arena, &.{ cmake_exe, "--build", build_path });
+            } else {
+                const prefix = install_dir orelse fatal("missing --install-dir", .{});
+                try argv.appendSlice(arena, &.{ cmake_exe, "--install", build_path, "--prefix", try cmakePath(arena, prefix) });
+            }
+        },
     }
+    try argv.appendSlice(arena, stage_args.items);
 
-    var build_argv: std.ArrayList([]const u8) = .empty;
-    try build_argv.appendSlice(arena, &.{ cmake_exe, "--build", build_path });
-    for (targets.items) |target| try build_argv.appendSlice(arena, &.{ "--target", target });
-    {
-        const log_path = try std.fs.path.join(arena, &.{ build_path, build_log_name });
-        if (!try runLogged(io, arena, build_argv.items, &env, log_path)) {
-            std.log.err("building failed; output above and in {s}", .{log_path});
-            return 1;
-        }
-    }
-
-    if (install_dir != null) {
-        const log_path = try std.fs.path.join(arena, &.{ build_path, install_log_name });
-        if (!try runLogged(io, arena, &.{ cmake_exe, "--install", build_path }, &env, log_path)) {
-            std.log.err("installing failed; output above and in {s}", .{log_path});
-            return 1;
-        }
+    const log_path = try std.fs.path.join(arena, &.{ build_path, try std.fmt.allocPrint(arena, "cmake.zig-{t}.log", .{stage}) });
+    if (!try runLogged(io, arena, argv.items, &env, log_path)) {
+        std.log.err("{t} failed; output above and in {s}", .{ stage, log_path });
+        return 1;
     }
     return 0;
+}
+
+/// A path as CMake wants it: with '/' on Windows.
+fn cmakePath(arena: Allocator, path: []const u8) ![]const u8 {
+    const copy = try arena.dupe(u8, path);
+    if (builtin.os.tag == .windows) std.mem.replaceScalar(u8, copy, '\\', '/');
+    return copy;
+}
+
+fn keyValue(v: []const u8, comptime name: []const u8) ![2][]const u8 {
+    const eq = std.mem.indexOfScalar(u8, v, '=') orelse fatal(name ++ " needs <name>=<value>: {s}", .{v});
+    return .{ v[0..eq], v[eq + 1 ..] };
 }
 
 /// Copies a file unless dest already has the same contents, so that its
@@ -240,17 +212,6 @@ fn option(arg: []const u8, comptime prefix: []const u8) ?[]const u8 {
     return if (std.mem.startsWith(u8, arg, prefix)) arg[prefix.len..] else null;
 }
 
-fn run(io: Io, argv: []const []const u8, env: *const Environ.Map, stdio: std.process.SpawnOptions.StdIo) !bool {
-    var child = std.process.spawn(io, .{
-        .argv = argv,
-        .environ_map = env,
-        .stdin = .ignore,
-        .stdout = stdio,
-        .stderr = stdio,
-    }) catch |err| fatal("failed to run {s}: {t}", .{ argv[0], err });
-    return (try child.wait(io)).success();
-}
-
 /// Runs argv with its output going to log_path, and prints the output if it
 /// fails.
 fn runLogged(io: Io, arena: Allocator, argv: []const []const u8, env: *const Environ.Map, log_path: []const u8) !bool {
@@ -258,7 +219,14 @@ fn runLogged(io: Io, arena: Allocator, argv: []const []const u8, env: *const Env
     const log = try cwd.createFile(io, log_path, .{});
     const ok = blk: {
         defer log.close(io);
-        break :blk try run(io, argv, env, .{ .file = log });
+        var child = std.process.spawn(io, .{
+            .argv = argv,
+            .environ_map = env,
+            .stdin = .ignore,
+            .stdout = .{ .file = log },
+            .stderr = .{ .file = log },
+        }) catch |err| fatal("failed to run {s}: {t}", .{ argv[0], err });
+        break :blk (try child.wait(io)).success();
     };
     if (!ok) {
         const output = try cwd.readFileAlloc(io, log_path, arena, .unlimited);

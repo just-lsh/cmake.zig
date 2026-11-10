@@ -7,7 +7,7 @@
 //!
 //! Both check the format and CPU architecture of the consumer executable.
 const std = @import("std");
-const cmake_zig = @import("cmake_zig");
+const cmake = @import("cmake");
 
 const cross_targets = [_][]const u8{
     "x86_64-linux-gnu.2.28",
@@ -22,7 +22,7 @@ const cross_targets = [_][]const u8{
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const dep = b.dependency("cmake_zig", .{});
+    const dep = b.dependency("cmake", .{ .python = true, .pkg_config = true });
     const check_exe = b.addExecutable(.{
         .name = "check-binary",
         .root_module = b.createModule(.{
@@ -35,10 +35,7 @@ pub fn build(b: *std.Build) void {
     const cross_step = b.step("cross", "Build for each cross target with a static library");
     b.default_step = test_step;
 
-    // hello does not use pkg-config, so without this its addProject() would
-    // return null before consumer's asks for pkgconf; see fetchTools().
-    if (!cmake_zig.fetchTools(dep, .{ .pkg_config = true })) return;
-    const native = addTest(b, dep, check_exe, test_step, target, optimize, true) orelse return;
+    const native = addTest(b, dep, check_exe, test_step, target, optimize, true);
     const host = b.graph.host.result;
     if (target.result.os.tag == host.os.tag and target.result.cpu.arch == host.cpu.arch) {
         const run = std.Build.Step.Run.create(b, "run consumer");
@@ -53,7 +50,7 @@ pub fn build(b: *std.Build) void {
 
     for (cross_targets) |triple| {
         const query = std.Target.Query.parse(.{ .arch_os_abi = triple }) catch unreachable;
-        _ = addTest(b, dep, check_exe, cross_step, b.resolveTargetQuery(query), optimize, false) orelse return;
+        _ = addTest(b, dep, check_exe, cross_step, b.resolveTargetQuery(query), optimize, false);
     }
 }
 
@@ -68,36 +65,35 @@ fn addTest(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     shared: bool,
-) ?Test {
+) Test {
     const t = target.result;
     const name = target.query.zigTriple(b.graph.arena) catch @panic("OOM");
 
-    const hello = cmake_zig.addProject(b, dep, .{
+    const hello = cmake.addProject(dep, .{
         .name = b.fmt("hello {s}", .{name}),
-        .source_dir = b.path("hello"),
+        .src_dir = b.path("hello"),
         .target = target,
         .optimize = optimize,
         .defines = &.{.{ "BUILD_SHARED_LIBS", .{ .boolean = shared } }},
-    }) orelse return null;
+    });
 
-    const consumer = cmake_zig.addProject(b, dep, .{
+    const consumer = cmake.addProject(dep, .{
         .name = b.fmt("consumer {s}", .{name}),
-        .source_dir = b.path("consumer"),
+        .src_dir = b.path("consumer"),
         .target = target,
         .optimize = optimize,
-        .pkg_config = true,
         .defines = &.{
-            .{ "CMAKE_PREFIX_PATH", .{ .paths = &.{hello.install_dir.?} } },
-            .{ "CMAKE_INSTALL_RPATH", .{ .paths = &.{hello.install_dir.?.path(b, "lib")} } },
+            .{ "CMAKE_PREFIX_PATH", .{ .paths = &.{hello.install_dir} } },
+            .{ "CMAKE_INSTALL_RPATH", .{ .paths = &.{hello.install_dir.path(b, "lib")} } },
             .{ "CONSUMER_SOURCES", .{ .list = if (t.os.tag == .windows) &.{"consumer.rc"} else &.{} } },
         },
-    }) orelse return null;
+    });
 
-    const exe = consumer.install_dir.?.path(b, b.fmt("bin/consumer{s}", .{t.exeFileExt()}));
+    const exe = consumer.install_dir.path(b, b.fmt("bin/consumer{s}", .{t.exeFileExt()}));
     const check = b.addRunArtifact(check_exe);
     check.setName(b.fmt("check consumer {s}", .{name}));
     check.addFileArg(exe);
     check.addArgs(&.{ @tagName(t.ofmt), @tagName(t.cpu.arch) });
     step.dependOn(&check.step);
-    return .{ .exe = exe, .hello_install_dir = hello.install_dir.? };
+    return .{ .exe = exe, .hello_install_dir = hello.install_dir };
 }
