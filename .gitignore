@@ -5,3 +5,7 @@ zig-pkg/
 # direnv
 .envrc
 .direnv/
+
+# editors
+.zed/
+.vscode/
