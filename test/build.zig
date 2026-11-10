@@ -64,7 +64,7 @@ fn addTest(
     check_exe: *std.Build.Step.Compile,
     step: *std.Build.Step,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     shared: bool,
 ) Test {
     const t = target.result;

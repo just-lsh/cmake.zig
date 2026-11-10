@@ -52,21 +52,29 @@ pub fn build(b: *Build) void {
     const py = if (python) hostTool(b, .python, python_exe) else null;
     const pkgconf = if (pkg_config) buildPkgConf(b) else null;
 
-    // Until everything is fetched, the paths are placeholders: zig build
-    // fetches what is missing and runs the build scripts again before
-    // running any step.
-    const missing = b.path("cmake.zig: not fetched yet");
-    instances.append(b.graph.arena, .{
-        .b = b,
-        .tools = .{
-            .cmake = cmake orelse missing,
-            .ninja = ninja orelse missing,
-            .python = if (python) py orelse missing else null,
-        },
-        .pkg_config = if (pkg_config) pkgconf orelse missing else null,
-        .helpers = addHelpers(b),
-    }) catch @panic("OOM");
+    // What addProject() and tools() use, exported the way zig build exports
+    // a package's outputs: named LazyPaths (dep.namedLazyPath()) and
+    // installed artifacts (dep.artifact()). Tools that are not fetched yet
+    // are left out; zig build fetches them and runs the build scripts again
+    // before running any step.
+    if (cmake) |path| b.addNamedLazyPath(named.cmake, path);
+    if (ninja) |path| b.addNamedLazyPath(named.ninja, path);
+    if (py) |path| b.addNamedLazyPath(named.python, path);
+    if (pkgconf) |path| b.addNamedLazyPath(named.pkg_config, path);
+    addHelpers(b);
 }
+
+/// The names of what build() exports for addProject().
+const named = struct {
+    const cmake = "cmake";
+    const ninja = "ninja";
+    const python = "python";
+    const pkg_config = "pkg-config";
+    const driver = "cmake-zig-driver";
+    fn shim(comptime tool: []const u8) []const u8 {
+        return "zig-" ++ tool;
+    }
+};
 
 /// The host executables the projects are built with.
 pub const Tools = struct {
@@ -78,7 +86,27 @@ pub const Tools = struct {
 
 /// The tools of a cmake dependency, e.g. to run a Python script in a Run step.
 pub fn tools(dep: *Build.Dependency) Tools {
-    return instance(dep).tools;
+    return .{
+        .cmake = requiredPath(dep, named.cmake),
+        .ninja = requiredPath(dep, named.ninja),
+        .python = optionalPath(dep, named.python),
+    };
+}
+
+/// A path that build() always exports. Missing only while lazy dependencies
+/// are being fetched, when the configuration is thrown away anyway: a
+/// placeholder then keeps the rest of the build script running, so that its
+/// own lazy dependencies are fetched in the same pass (dep.namedLazyPath()
+/// would stop it).
+fn requiredPath(dep: *Build.Dependency, name: []const u8) LazyPath {
+    if (dep.builder.named_lazy_paths.get(name)) |path| return path;
+    if (dep.builder.graph.needed_lazy_dependencies.count() != 0) return dep.path("cmake.zig: not fetched yet");
+    @panic("cmake.zig: not a cmake dependency (b.dependency(\"cmake\", ...))");
+}
+
+/// A path that build() exports only for some dependency options.
+fn optionalPath(dep: *Build.Dependency, name: []const u8) ?LazyPath {
+    return dep.builder.named_lazy_paths.get(name);
 }
 
 pub const Value = union(enum) {
@@ -109,7 +137,7 @@ pub const Options = struct {
     /// architecture differs from the host's.
     target: Build.ResolvedTarget,
     /// Picks CMAKE_BUILD_TYPE and its compiler and linker flags.
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     /// Names the steps: "configure <name>", "build <name>", "install <name>".
     name: []const u8 = "cmake",
     /// Cache entries, passed after the ones cmake.zig sets, so they can
@@ -241,7 +269,11 @@ pub fn addInstallArtifacts(b: *Build, project: Project) *Build.Step.InstallDir {
 /// record CMAKE_INSTALL_PREFIX when configuring get CMake's default.
 pub fn addProject(dep: *Build.Dependency, options: Options) Project {
     const b = dep.builder;
-    const inst = instance(dep);
+    const driver: Driver = .{
+        .exe = dep.artifact(named.driver),
+        .tools = tools(dep),
+        .pkg_config = optionalPath(dep, named.pkg_config),
+    };
     const target = options.target.result;
     const host = b.graph.host.result;
     const host_build = options.target.query.isNative();
@@ -250,13 +282,13 @@ pub fn addProject(dep: *Build.Dependency, options: Options) Project {
     const env = Env{ .host_system = host_system, .names = options.env };
 
     // configure
-    const configure = inst.driverRun(b, "configure", options.name, env);
+    const configure = driver.run(b, "configure", options.name, env);
     const build_dir = configure.addOutputDirectoryArg2("build", .{ .prefix = "--build-dir=", .make_absolute = true });
     configure.setName(b.fmt("configure {s}", .{options.name}));
     configure.addDirectoryArg2(options.src_dir, .{ .prefix = "--arg=-S", .make_absolute = true });
     configure.addArgs(&.{ "--arg=-G", "--arg=Ninja" });
-    configure.addFileArg2(inst.tools.ninja, .{ .prefix = "--arg=-DCMAKE_MAKE_PROGRAM=", .make_absolute = true });
-    if (inst.tools.python) |python| {
+    configure.addFileArg2(driver.tools.ninja, .{ .prefix = "--arg=-DCMAKE_MAKE_PROGRAM=", .make_absolute = true });
+    if (driver.tools.python) |python| {
         for ([_][]const u8{ "Python3", "Python", "PYTHON" }) |prefix| {
             configure.addFileArg2(python, .{ .prefix = b.fmt("--arg=-D{s}_EXECUTABLE=", .{prefix}), .make_absolute = true });
         }
@@ -264,8 +296,8 @@ pub fn addProject(dep: *Build.Dependency, options: Options) Project {
 
     // The toolchain.
     configure.addFileArg2(dep.path("toolchain/zig.cmake"), .{ .prefix = "--arg=--toolchain=", .make_absolute = true });
-    for (inst.helpers.shims, shim_names) |shim, name| {
-        configure.addFileArg2(shim, .{ .prefix = b.fmt("--arg=-DZIG_{s}=", .{name[1]}), .make_absolute = true });
+    inline for (shim_names) |name| {
+        configure.addFileArg2(requiredPath(dep, named.shim(name[0])), .{ .prefix = "--arg=-DZIG_" ++ name[1] ++ "=", .make_absolute = true });
     }
     const target_args: []const u8 = if (host_build) "" else b.fmt("-target;{s};-mcpu={s}", .{
         options.target.query.zigTriple(arena) catch @panic("OOM"),
@@ -295,7 +327,7 @@ pub fn addProject(dep: *Build.Dependency, options: Options) Project {
             "CMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY",
         }) |name| configure.addArg(b.fmt("--arg=-D{s}=OFF", .{name}));
     }
-    if (inst.pkg_config) |exe| {
+    if (driver.pkg_config) |exe| {
         configure.addFileArg2(exe, .{ .prefix = "--tool=PKG_CONFIG_EXECUTABLE=", .make_absolute = true });
         configure.addArg("--arg=-DPKG_CONFIG_ARGN=--define-prefix");
     }
@@ -337,13 +369,13 @@ pub fn addProject(dep: *Build.Dependency, options: Options) Project {
     for (options.configure_args) |arg| configure.addArg(b.fmt("--arg={s}", .{arg}));
 
     // build
-    const build_step = inst.driverRun(b, "build", options.name, env);
+    const build_step = driver.run(b, "build", options.name, env);
     build_step.has_side_effects = true;
     build_step.addDirectoryArg2(build_dir, .{ .prefix = "--build-dir=", .make_absolute = true });
     for (options.build_args) |arg| build_step.addArg(b.fmt("--arg={s}", .{arg}));
 
     // install
-    const install = inst.driverRun(b, "install", options.name, env);
+    const install = driver.run(b, "install", options.name, env);
     install.has_side_effects = true;
     install.addDirectoryArg2(build_dir, .{ .prefix = "--build-dir=", .make_absolute = true });
     const install_dir = install.addOutputDirectoryArg2("install", .{ .prefix = "--install-dir=", .make_absolute = true });
@@ -368,60 +400,50 @@ const Env = struct {
     names: []const []const u8,
 };
 
-/// A cmake dependency's tools and helper executables.
-const Instance = struct {
-    b: *Build,
+/// The driver (src/driver.zig) and what it runs.
+const Driver = struct {
+    exe: *Build.Step.Compile,
     tools: Tools,
     /// pkgconf, if .pkg_config = true.
     pkg_config: ?LazyPath,
-    helpers: Helpers,
 
     /// A run of the driver in the given mode (configure, build or install),
     /// with the arguments all modes take.
-    fn driverRun(inst: *const Instance, b: *Build, mode: []const u8, name: []const u8, env: Env) *Run {
-        const run = Run.create(b, b.fmt("{s} {s}", .{ mode, name }));
+    fn run(d: Driver, b: *Build, mode: []const u8, name: []const u8, env: Env) *Run {
+        const r = Run.create(b, b.fmt("{s} {s}", .{ mode, name }));
         // Not .inherit: zig build holds a global lock on stderr while a step
         // with inherited stdio runs, so projects would build one at a time.
         // The driver keeps the tools' output in logs in the build directory
         // and prints it to stderr only on failure, which zig build then
         // shows. .check also lets zig build cache the configure step.
-        run.stdio = .{ .check = .empty };
-        run.expectExitCode(0);
-        run.addArtifactArg(inst.helpers.driver);
-        run.addArg(mode);
-        run.addFileArg2(inst.tools.cmake, .{ .prefix = "--cmake=", .make_absolute = true });
-        run.addDirectoryArg2(inst.tools.cmake.dirname(), .{ .prefix = "--path=", .make_absolute = true });
-        run.addDirectoryArg2(inst.tools.ninja.dirname(), .{ .prefix = "--path=", .make_absolute = true });
-        if (inst.tools.python) |python| run.addDirectoryArg2(python.dirname(), .{ .prefix = "--path=", .make_absolute = true });
+        r.stdio = .{ .check = .empty };
+        r.expectExitCode(0);
+        r.addArtifactArg(d.exe);
+        r.addArg(mode);
+        r.addFileArg2(d.tools.cmake, .{ .prefix = "--cmake=", .make_absolute = true });
+        r.addDirectoryArg2(d.tools.cmake.dirname(), .{ .prefix = "--path=", .make_absolute = true });
+        r.addDirectoryArg2(d.tools.ninja.dirname(), .{ .prefix = "--path=", .make_absolute = true });
+        if (d.tools.python) |python| r.addDirectoryArg2(python.dirname(), .{ .prefix = "--path=", .make_absolute = true });
         if (env.host_system) {
-            run.addArg("--inherit-env");
-        } else if (inst.pkg_config != null) {
+            r.addArg("--inherit-env");
+        } else if (d.pkg_config != null) {
             // An empty PKG_CONFIG_LIBDIR (unlike an unset one) empties
             // pkgconf's default search path, on Windows
             // <pkgconf>/../lib/pkgconfig.
-            run.addArg("--set-env=PKG_CONFIG_LIBDIR=");
+            r.addArg("--set-env=PKG_CONFIG_LIBDIR=");
         }
         // The values, not just the names, so that they are part of the
         // configure step's inputs.
         for (env.names) |var_name| {
             if (b.graph.environ_map.get(var_name)) |value| {
-                run.addArg(b.fmt("--set-env={s}={s}", .{ var_name, value }));
+                r.addArg(b.fmt("--set-env={s}={s}", .{ var_name, value }));
             } else {
-                run.addArg(b.fmt("--unset-env={s}", .{var_name}));
+                r.addArg(b.fmt("--unset-env={s}", .{var_name}));
             }
         }
-        return run;
+        return r;
     }
 };
-
-var instances: std.ArrayList(Instance) = .empty;
-
-fn instance(dep: *Build.Dependency) *const Instance {
-    for (instances.items) |*inst| {
-        if (inst.b == dep.builder) return inst;
-    }
-    @panic("cmake.zig: not a cmake dependency (b.dependency(\"cmake\", ...))");
-}
 
 fn addUpdateToolsStep(b: *Build) void {
     const update = b.step("update-tools", "Update the tool URLs and hashes in build.zig.zon (args: cmake=<version> ninja=<version> python=<version>+<build> pkgconf=<version>)");
@@ -454,12 +476,12 @@ const BuildType = struct {
 /// the libc pieces zig links in (e.g. glibc's libc_nonshared). Like zig's
 /// own Debug mode, zig cc enables UBSan (with a runtime that reports the
 /// error and panics) at -O0.
-fn buildType(optimize: std.builtin.OptimizeMode) BuildType {
+fn buildType(optimize: std.lang.Optimize) BuildType {
     return switch (optimize) {
-        .Debug => .{ .name = "Debug", .flags = "-O0 -g", .link_flags = "" },
-        .ReleaseSafe => .{ .name = "RelWithDebInfo", .flags = "-O2 -g -DNDEBUG", .link_flags = "" },
-        .ReleaseFast => .{ .name = "Release", .flags = "-O3 -g0 -DNDEBUG", .link_flags = "-s" },
-        .ReleaseSmall => .{ .name = "MinSizeRel", .flags = "-Os -g0 -DNDEBUG", .link_flags = "-s" },
+        .debug => .{ .name = "Debug", .flags = "-O0 -g", .link_flags = "" },
+        .safe => .{ .name = "RelWithDebInfo", .flags = "-O2 -g -DNDEBUG", .link_flags = "" },
+        .fast => .{ .name = "Release", .flags = "-O3 -g0 -DNDEBUG", .link_flags = "-s" },
+        .small => .{ .name = "MinSizeRel", .flags = "-Os -g0 -DNDEBUG", .link_flags = "-s" },
     };
 }
 
@@ -564,21 +586,21 @@ const shim_names = [_][2][]const u8{
     .{ "rc", "RC" },
 };
 
-/// Host executables that the steps run.
-const Helpers = struct {
-    driver: *Build.Step.Compile,
-    shims: [shim_names.len]LazyPath,
-};
-
-fn addHelpers(b: *Build) Helpers {
+/// The host executables that the steps run: the driver, exported as an
+/// installed artifact, and the zig launchers (src/shim.zig), one copy per
+/// tool name, exported as named LazyPaths.
+fn addHelpers(b: *Build) void {
     const driver = b.addExecutable(.{
-        .name = "cmake-zig-driver",
+        .name = named.driver,
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/driver.zig"),
             .target = b.graph.host,
-            .optimize = .ReleaseSafe,
+            .optimize = .safe,
         }),
     });
+    // Only to make it reachable with dep.artifact(): a dependency's install
+    // step does not run as part of the depending package's.
+    b.installArtifact(driver);
 
     const options = b.addOptions();
     options.addOption([]const u8, "zig_exe", b.graph.zig_exe);
@@ -587,17 +609,15 @@ fn addHelpers(b: *Build) Helpers {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/shim.zig"),
             .target = b.graph.host,
-            .optimize = .ReleaseFast,
+            .optimize = .fast,
             .imports = &.{.{ .name = "options", .module = options.createModule() }},
         }),
     });
     const files = b.addWriteFiles();
     const ext = b.graph.host.result.exeFileExt();
-    var shims: [shim_names.len]LazyPath = undefined;
-    for (&shims, shim_names) |*path, name| {
-        path.* = files.addCopyFile(shim.getEmittedBin(), b.fmt("{s}{s}", .{ name[0], ext }));
+    inline for (shim_names) |name| {
+        b.addNamedLazyPath(named.shim(name[0]), files.addCopyFile(shim.getEmittedBin(), b.fmt("{s}{s}", .{ name[0], ext })));
     }
-    return .{ .driver = driver, .shims = shims };
 }
 
 /// pkgconf, built for the host from the lazily fetched source, with an empty
@@ -636,7 +656,7 @@ fn buildPkgConf(b: *Build) ?LazyPath {
 
     const mod = b.createModule(.{
         .target = host,
-        .optimize = .ReleaseSafe,
+        .optimize = .safe,
         .link_libc = true,
     });
     mod.addConfigHeader(config);
