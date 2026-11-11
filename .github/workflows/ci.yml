@@ -50,7 +50,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/zig-global-cache
-          key: zig-global-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('zig/version') }}-${{ hashFiles('build.zig', 'test/build.zig', 'src/**', 'toolchain/**') }}
+          key: zig-global-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('zig/version') }}-${{ hashFiles('build.zig', 'test/build.zig', 'src/**') }}
           restore-keys: |
             zig-global-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('zig/version') }}-
 

@@ -42,9 +42,9 @@ pub fn build(b: *std.Build) void {
         .src_dir = b.path("app"),
         .target = target,
         .optimize = optimize,
-        .defines = &.{.{ "CMAKE_PREFIX_PATH", .{ .paths = &.{lib.install_dir} } }},
+        .defines = &.{.{ "CMAKE_PREFIX_PATH", .{ .path = lib.install_dir } }},
         .configure_args = &.{},
-        .build_args = &.{ "--target", "app" },
+        .build_args = &.{"app"}, // Ninja targets
         .install_args = &.{"--strip"},
     });
 
@@ -54,7 +54,7 @@ pub fn build(b: *std.Build) void {
 ```
 
 `addProject` adds three steps, each depending on the one before:
-`configure` (`cmake -S -B`), `build` (`cmake --build`) and `install`
+`configure` (`cmake -S -B`), `build` (`ninja -C`) and `install`
 (`cmake --install --prefix`). `build_dir` is an output of `configure`,
 `install_dir` of `install`; zig build runs only the steps that what you use
 needs.
@@ -78,13 +78,16 @@ for other uses, e.g. running a Python script in a `Run` step.
 
 Dependency options: `python`, `pkg_config`, and `cmake_exe`, `ninja_exe`,
 `python_exe` to use your own tools instead of the fetched ones. See the doc
-comments in [build.zig](build.zig) for all project options.
+comments in [src/project.zig](src/project.zig) for all project options.
 
 ## How it works
 
-- **Toolchain.** [toolchain/zig.cmake](toolchain/zig.cmake) sets the compilers to
-  small launchers, built by zig for the host, which run `zig cc`, `zig c++`,
-  `zig ar`, `zig ranlib` and `zig rc` with the zig that runs the build.
+- **Toolchain.** Everything is set on CMake's command line, without a
+  toolchain file. The compilers are the zig that runs the build with
+  mandatory arguments (`CMAKE_C_COMPILER=<zig>;cc;-target;...`). CMake needs
+  a single executable for `CMAKE_AR`, `CMAKE_RANLIB` and `CMAKE_RC_COMPILER`:
+  copies of [src/zig-tool-wrapper.zig](src/zig-tool-wrapper.zig), built for the
+  host, which run `zig ar`, `zig ranlib` and `zig rc`.
 - **Targets.** A native target (no `-Dtarget`/`-Dcpu`) is a host build.
   Otherwise zig cc gets `-target` and `-mcpu`, and CMake gets
   `CMAKE_SYSTEM_NAME` and `CMAKE_SYSTEM_PROCESSOR` when the OS or CPU
@@ -102,25 +105,31 @@ comments in [build.zig](build.zig) for all project options.
   `CMAKE_INSTALL_LIBDIR` is `lib`.
   The aim is a build that does not depend on the host, not a bit-for-bit
   reproducible one.
-- **Output.** Projects build in parallel. CMake's and Ninja's output goes to
-  `cmake.zig-{configure,build,install}.log` in the build directory and is only
-  shown when a step fails.
+- **Output.** Projects build in parallel. zig build shows what the steps write
+  to stderr: CMake's errors and warnings, and, through
+  [src/ninja-wrapper.zig](src/ninja-wrapper.zig), Ninja's output, which is
+  only the output of the commands (`--quiet`): compiler errors and warnings.
+  CMake's status messages are not shown.
 - **Caching.** The build and install directories are output directories under
   `.zig-cache/o/<hash>`, where the hash covers all inputs (target, optimize
-  mode, defines, arguments, the values of `Options.env`, tools, toolchain, zig).
+  mode, defines, arguments, the environment when it is not inherited, tools,
+  zig).
   Each configuration has its own, so switching between them is cheap, and they
   keep their location, as CMake needs. zig build caches the configure step: it
   runs only when an input changes. Build and install always run; Ninja and
   CMake decide what is out of date, and Ninja re-runs CMake when a
   `CMakeLists.txt` changes. Old configurations' directories stay until
   `.zig-cache` is deleted, and deleting one build directory alone needs
-  `.zig-cache` deleted too, as zig build does not notice it.
+  `.zig-cache` deleted too, as zig build does not notice it (the build step
+  then fails with Ninja's "loading 'build.ninja': No such file or directory").
 
 ## Limitations
 
 - Prebuilt tools exist for Linux (glibc), macOS and Windows on x86_64 and
   aarch64. On other hosts, pass your own with the `cmake_exe`, `ninja_exe` and
   `python_exe` dependency options.
+- Path defines take a single path; for several prefixes, use one
+  `<Package>_ROOT` or `<Package>_DIR` define per package.
 - The install prefix is only given to `cmake --install`, as the install step's
   directory is not known when configuring. Installed CMake package files are
   relocatable, and pkgconf derives a `.pc` file's prefix from its location, but
@@ -147,12 +156,22 @@ update a release, follow the steps at the top of `zig/download.sh` and
 
 ```sh
 cd test && zig build test cross   # build the test projects, natively and cross
-zig build update-tools -- cmake=4.4.5 ninja=1.13.2 python=3.13.18+20261026 pkgconf=3.0.10
 ```
 
-`update-tools` rewrites the tool URLs and hashes in `build.zig.zon` and
-`src/versions.zig`. It fetches with a temporary cache, as a tarball left in the
-global cache would be unpacked into `zig-pkg/` even for lazy dependencies.
+### Updating the tools
+
+The CMake, Ninja, Python and pkgconf releases are the lazy dependencies in
+`build.zig.zon`, one per host for the prebuilt tools. To update one, change
+the version in each of its URLs and replace each hash with the one `zig fetch`
+prints:
+
+```sh
+ZIG_GLOBAL_CACHE_DIR=$(mktemp -d) zig fetch <url>
+```
+
+The temporary cache keeps the archive out of the global cache, where it would
+be unpacked into `zig-pkg/` even for lazy dependencies. For pkgconf, also
+update `pkgconf_version` in [src/host_tools.zig](src/host_tools.zig).
 
 ## License
 

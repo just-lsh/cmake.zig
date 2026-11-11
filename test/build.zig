@@ -84,8 +84,8 @@ fn addTest(
         .target = target,
         .optimize = optimize,
         .defines = &.{
-            .{ "CMAKE_PREFIX_PATH", .{ .paths = &.{hello.install_dir} } },
-            .{ "CMAKE_INSTALL_RPATH", .{ .paths = &.{hello.install_dir.path(b, "lib")} } },
+            .{ "CMAKE_PREFIX_PATH", .{ .path = hello.install_dir } },
+            .{ "CMAKE_INSTALL_RPATH", .{ .path = hello.install_dir.path(b, "lib") } },
             .{ "CONSUMER_SOURCES", .{ .list = if (t.os.tag == .windows) &.{"consumer.rc"} else &.{} } },
         },
     });
