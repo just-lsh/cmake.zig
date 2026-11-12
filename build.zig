@@ -3,8 +3,18 @@ const builtin = @import("builtin");
 
 const root = @import("src/root.zig");
 
-pub const Project = root.Project;
-pub const addProject = root.addProject;
+pub const Configure = root.Configure;
+pub const ConfigureOptions = root.ConfigureOptions;
+pub const Define = root.Define;
+pub const addConfigure = root.addConfigure;
+
+pub const Build = root.Build;
+pub const BuildOptions = root.BuildOptions;
+pub const addBuild = root.addBuild;
+
+pub const Install = root.Install;
+pub const InstallOptions = root.InstallOptions;
+pub const addInstall = root.addInstall;
 
 const zig_version: std.SemanticVersion.Range = .{
     .min = .{ .major = 0, .minor = 17, .patch = 0 },

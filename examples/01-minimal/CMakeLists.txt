@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(01_example_minimal LANGUAGES C)
+project(minimal LANGUAGES C)
 
-add_executable(01_example_minimal main.c)
-install(TARGETS 01_example_minimal)
+add_executable(${PROJECT_NAME} main.c)
+install(TARGETS ${PROJECT_NAME})

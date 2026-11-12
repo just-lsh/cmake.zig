@@ -1,6 +1,6 @@
 #include <stdio.h>
 
 int main(void) {
-  printf("01 Example Minimal\n");
+  printf("01 Minimal Example\n");
   return 0;
 }
