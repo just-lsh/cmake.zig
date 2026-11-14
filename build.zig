@@ -68,6 +68,50 @@ pub fn build(b: *std.Build) !void {
     inline for ([_][]const u8{ "cc", "c++", "ar", "rc", "ranlib" }) |tool| {
         installZigToolWrapper(b, tool);
     }
+
+    addExamples(b);
+}
+
+const Example = struct {
+    dir: []const u8,
+    exe: []const u8,
+};
+
+const examples = [_]Example{
+    .{ .dir = "01-minimal", .exe = "minimal" },
+};
+
+fn addExamples(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    // The public API takes the cmake.zig dependency. Within this package that
+    // is this builder itself, which holds the same named paths and artifacts.
+    const self_dep = b.graph.create(std.Build.Dependency);
+    self_dep.* = .{ .builder = b };
+
+    const examples_step = b.step("examples", "Build and install all examples");
+
+    for (examples) |example| {
+        const configure = root.addConfigure(b, self_dep, .{
+            .target = target,
+            .optimize = optimize,
+            .src_dir = b.path(b.fmt("examples/{s}", .{example.dir})),
+        });
+        const build_ = root.addBuild(b, .{ .configure = configure });
+        const install = root.addInstall(b, .{ .build = build_ });
+
+        const exe_name = b.fmt("{s}{s}", .{ example.exe, target.result.exeFileExt() });
+        const exe = install.install_dir.path(b, b.fmt("bin/{s}", .{exe_name}));
+
+        examples_step.dependOn(&b.addInstallBinFile(exe, exe_name).step);
+
+        const run = b.addRunFile(exe);
+        b.step(
+            b.fmt("run-{s}", .{example.exe}),
+            b.fmt("Run the {s} example", .{example.exe}),
+        ).dependOn(&run.step);
+    }
 }
 
 fn vendorCmake(b: *std.Build) ?std.Build.LazyPath {

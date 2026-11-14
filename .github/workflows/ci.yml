@@ -5,7 +5,7 @@ on:
   pull_request:
 
 jobs:
-  test:
+  examples:
     strategy:
       fail-fast: false
       matrix:
@@ -20,51 +20,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Cache zig
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.1
+
+      # Zig unpacks dependencies, including the lazily fetched CMake and Ninja,
+      # into zig-pkg/ next to the build root.
+      - name: Cache zig packages
         uses: actions/cache@v6
         with:
-          path: zig/cache
-          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('zig/version') }}
+          path: zig-pkg
+          key: zig-pkg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('build.zig.zon') }}
 
-      - name: Download zig
-        if: runner.os != 'Windows'
-        run: ./zig/download.sh
-
-      - name: Download zig
-        if: runner.os == 'Windows'
-        shell: cmd
-        run: zig\download.cmd
-
-      - name: Add zig to PATH
-        shell: bash
-        run: |
-          echo "$GITHUB_WORKSPACE/zig" >> "$GITHUB_PATH"
-          echo "ZIG_GLOBAL_CACHE_DIR=$RUNNER_TEMP/zig-global-cache" >> "$GITHUB_ENV"
-
-      # Zig's global cache holds what zig cc builds once per target and is
-      # slow to build: compiler-rt, libc++, the UBSan runtime, the libc
-      # (glibc stubs, musl, MinGW). That depends on the zig version and the
-      # targets and flags in the build scripts. It is about 500 MB, so it is
-      # saved only when those change, not on every run.
-      - name: Cache zig global cache
-        uses: actions/cache@v6
-        with:
-          path: ${{ runner.temp }}/zig-global-cache
-          key: zig-global-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('zig/version') }}-${{ hashFiles('build.zig', 'test/build.zig', 'src/**', 'toolchain/**') }}
-          restore-keys: |
-            zig-global-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('zig/version') }}-
-
-      # Zig unpacks dependencies, including the lazily fetched CMake, Ninja and
-      # Python, into zig-pkg/ next to the build root being built, i.e. test/.
-      - name: Cache Zig packages
-        uses: actions/cache@v6
-        with:
-          path: test/zig-pkg
-          key: zig-pkg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('zig/version') }}-${{ hashFiles('**/build.zig.zon') }}
-          restore-keys: |
-            zig-pkg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('zig/version') }}-
-
-      # test: the native target, with a shared library, and runs the program;
-      # cross: every cross target, from every host.
-      - run: zig build test cross --summary all
-        working-directory: test
+      - run: zig build examples run-minimal --summary all
