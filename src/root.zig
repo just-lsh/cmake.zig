@@ -1,109 +1,70 @@
 const std = @import("std");
 
-pub const Configure = struct {
-    run: *std.Build.Step.Run,
-    dep: *std.Build.Dependency,
-    build_dir: std.Build.LazyPath,
-    /// Human readable project name used for step names.
-    name: []const u8,
-};
-
 pub const Define = struct {
     name: []const u8,
     value: []const u8,
 };
 
-pub const ConfigureOptions = struct {
+pub const Options = struct {
+    /// Root of an immutable CMake source package. Only its path is part of the
+    /// cache key, not its contents.
+    src_dir: std.Build.LazyPath,
+    /// Accepted but not applied yet: projects are built for the host.
     target: std.Build.ResolvedTarget,
     optimize: std.lang.Optimize,
-    src_dir: std.Build.LazyPath,
-    /// Cache entries passed as `-D<name>=<value>`.
+    /// Cache entries passed as `-D<name>=<value>`, in the given order.
     defines: []const Define = &.{},
     /// Extra arguments appended verbatim to the configure command line.
     extra_args: []const []const u8 = &.{},
 };
 
-/// Note: only the `src_dir` path is part of this step's cache key, not its contents.
-/// Changes to `CMakeLists.txt` are picked up by the (always running) build step,
-/// where Ninja re-runs CMake when the generated build files are out of date.
-pub fn addConfigure(
+pub const Project = struct {
+    run: *std.Build.Step.Run,
+    /// The CMake install prefix, populated once `run` has completed.
+    install_dir: std.Build.LazyPath,
+};
+
+/// Configures, builds and installs a CMake project in one cached Run step.
+/// On a cache hit the `cmake-driver` is not launched at all; any change to a
+/// tool, the source path or an argument selects a different cache entry, which
+/// is always a cold build.
+pub fn addProject(
     b: *std.Build,
     dep: *std.Build.Dependency,
-    options: ConfigureOptions,
-) Configure {
-    const cmake = dep.namedLazyPath("cmake");
-    const ninja = dep.namedLazyPath("ninja");
-    const name = b.fmt("{f}", .{options.src_dir});
+    options: Options,
+) Project {
+    const run = b.addRunArtifact(dep.artifact("cmake-driver"));
+    run.setName(b.fmt("cmake {f}", .{options.src_dir}));
+    run.expectExitCode(0);
 
-    const run = b.addRunFile(cmake);
-    run.setName(b.fmt("cmake configure {s}", .{name}));
-    run.addDirectoryArg2(options.src_dir, .{ .prefix = "-S", .make_absolute = true });
-    const build_dir = run.addOutputDirectoryArg2("build", .{ .prefix = "-B", .make_absolute = true });
-    run.addArgs(&.{ "-G", "Ninja" });
-    run.addFileArg2(ninja, .{ .prefix = "-DCMAKE_MAKE_PROGRAM:FILEPATH=", .make_absolute = true });
+    // Argument convention of `src/bin/cmake-driver.zig`: every path is a
+    // separate argument following its flag.
+    run.addArg("--cmake");
+    run.addFileArg2(dep.namedLazyPath("cmake"), .{ .make_absolute = true });
+    run.addArg("--ninja");
+    run.addFileArg2(dep.namedLazyPath("ninja"), .{ .make_absolute = true });
+    run.addArg("--ninja-wrapper");
+    run.addArtifactArg2(dep.artifact("ninja-wrapper"), .{ .make_absolute = true });
+    run.addArg("--source");
+    run.addDirectoryArg2(options.src_dir, .{ .make_absolute = true });
+    run.addArg("--workspace");
+    const workspace = run.addOutputDirectoryArg2("workspace", .{ .make_absolute = true });
 
     addToolchainArgs(run, dep);
     addOptimizeArgs(b, run, options.optimize);
 
     for (options.defines) |define| {
-        run.addArg(b.fmt("-D{s}={s}", .{ define.name, define.value }));
+        addConfigureArg(run, b.fmt("-D{s}={s}", .{ define.name, define.value }));
     }
-    run.addArgs(options.extra_args);
+    for (options.extra_args) |arg| {
+        addConfigureArg(run, arg);
+    }
 
-    return .{ .run = run, .dep = dep, .build_dir = build_dir, .name = name };
+    return .{ .run = run, .install_dir = workspace.path(b, "install") };
 }
 
-pub const Build = struct {
-    run: *std.Build.Step.Run,
-    configure: Configure,
-};
-
-pub const BuildOptions = struct {
-    configure: Configure,
-    parallel: bool = true,
-};
-
-/// Builds in place inside the configure step's output directory. This mutates
-/// that cache entry, so a configure re-run (new cache key) means a cold build,
-/// and two builds of the same `Configure` must not run concurrently.
-pub fn addBuild(b: *std.Build, options: BuildOptions) Build {
-    const configure = options.configure;
-    const cmake = configure.dep.namedLazyPath("cmake");
-
-    const run = b.addRunFile(cmake);
-    run.setName(b.fmt("cmake build {s}", .{configure.name}));
-    // Ninja decides what is out of date, so this must always run.
-    run.has_side_effects = true;
-    run.addArg("--build");
-    run.addDirectoryArg2(configure.build_dir, .{ .make_absolute = true });
-    if (options.parallel) run.addArg("--parallel");
-
-    return .{ .run = run, .configure = configure };
-}
-
-pub const Install = struct {
-    run: *std.Build.Step.Run,
-    install_dir: std.Build.LazyPath,
-};
-
-pub const InstallOptions = struct {
-    build: Build,
-};
-
-pub fn addInstall(b: *std.Build, options: InstallOptions) Install {
-    const configure = options.build.configure;
-    const cmake = configure.dep.namedLazyPath("cmake");
-
-    const run = b.addRunFile(cmake);
-    run.setName(b.fmt("cmake install {s}", .{configure.name}));
-    run.has_side_effects = true;
-    // The build directory comes from configure, so the build step is not an implicit dependency.
-    run.step.dependOn(&options.build.run.step);
-    run.addArg("--install");
-    run.addDirectoryArg2(configure.build_dir, .{ .make_absolute = true });
-    const install_dir = run.addOutputDirectoryArg2("install", .{ .prefix = "--prefix=", .make_absolute = true });
-
-    return .{ .run = run, .install_dir = install_dir };
+fn addConfigureArg(run: *std.Build.Step.Run, arg: []const u8) void {
+    run.addArgs(&.{ "--configure-arg", arg });
 }
 
 fn addToolchainArgs(
@@ -111,14 +72,15 @@ fn addToolchainArgs(
     dep: *std.Build.Dependency,
 ) void {
     inline for ([_]@Tuple(&.{ []const u8, []const u8 }){
-        .{ "zig-cc", "-DCMAKE_C_COMPILER:FILEPATH=" },
-        .{ "zig-c++", "-DCMAKE_CXX_COMPILER:FILEPATH=" },
-        .{ "zig-ar", "-DCMAKE_AR:FILEPATH=" },
-        .{ "zig-rc", "-DCMAKE_RC_COMPILER:FILEPATH=" },
-        .{ "zig-ranlib", "-DCMAKE_RANLIB:FILEPATH=" },
+        .{ "zig-cc", "CMAKE_C_COMPILER" },
+        .{ "zig-c++", "CMAKE_CXX_COMPILER" },
+        .{ "zig-ar", "CMAKE_AR" },
+        .{ "zig-rc", "CMAKE_RC_COMPILER" },
+        .{ "zig-ranlib", "CMAKE_RANLIB" },
     }) |tuple| {
-        const artifact, const prefix = tuple;
-        run.addArtifactArg2(dep.artifact(artifact), .{ .prefix = prefix, .make_absolute = true });
+        const artifact, const variable = tuple;
+        run.addArgs(&.{ "--tool", variable });
+        run.addArtifactArg2(dep.artifact(artifact), .{ .make_absolute = true });
     }
 }
 
@@ -162,17 +124,17 @@ fn addOptimizeArgs(
         },
     };
 
-    run.addArg(b.fmt("-DCMAKE_BUILD_TYPE:STRING={s}", .{config.name}));
+    addConfigureArg(run, b.fmt("-DCMAKE_BUILD_TYPE:STRING={s}", .{config.name}));
 
     inline for (.{ "C", "CXX" }) |lang| {
-        run.addArg(b.fmt(
+        addConfigureArg(run, b.fmt(
             "-DCMAKE_{s}_FLAGS_{s}:STRING={s}",
             .{ lang, config.suffix, config.flags },
         ));
     }
 
     inline for (.{ "EXE", "SHARED", "MODULE" }) |kind| {
-        run.addArg(b.fmt(
+        addConfigureArg(run, b.fmt(
             "-DCMAKE_{s}_LINKER_FLAGS_{s}:STRING={s}",
             .{ kind, config.suffix, config.linker_flags },
         ));

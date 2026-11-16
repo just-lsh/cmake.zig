@@ -54,41 +54,6 @@
             .hash = "N-V-__8AAAA4CQBBD5_zxk7WtTil_jdSsgGrmRhH8zUntUzo",
             .lazy = true,
         },
-        .python_linux_x86_64 = .{
-            .url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.13.18%2B20261026-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
-            .hash = "N-V-__8AAI2R6QXra70rYMHDg9HWwRcaO-N5BN1ZX2gvWXvg",
-            .lazy = true,
-        },
-        .python_linux_aarch64 = .{
-            .url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.13.18%2B20261026-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz",
-            .hash = "N-V-__8AAJNqtQTqwshqlu1O8mfxtHfzTq_Nk9j9HVH5Jiwd",
-            .lazy = true,
-        },
-        .python_macos_x86_64 = .{
-            .url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.13.18%2B20261026-x86_64-apple-darwin-install_only_stripped.tar.gz",
-            .hash = "N-V-__8AADld4AMq3L9tWrKJFNDO-KZeWqv5A2EsS8-OoU4j",
-            .lazy = true,
-        },
-        .python_macos_aarch64 = .{
-            .url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.13.18%2B20261026-aarch64-apple-darwin-install_only_stripped.tar.gz",
-            .hash = "N-V-__8AAI_a2wPDsZblNn_XTVflIIJymWxIABD0VYus3y9n",
-            .lazy = true,
-        },
-        .python_windows_x86_64 = .{
-            .url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.13.18%2B20261026-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
-            .hash = "N-V-__8AAIaquwO4gtaXA9hxrs5xOIUJBoeEZEKcQOIuV5W4",
-            .lazy = true,
-        },
-        .python_windows_aarch64 = .{
-            .url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.13.18%2B20261026-aarch64-pc-windows-msvc-install_only_stripped.tar.gz",
-            .hash = "N-V-__8AAPCLyQPLJXWiBivHOcehQcaKWOv3CW5WxX5bkaQC",
-            .lazy = true,
-        },
-        .pkgconf = .{
-            .url = "https://github.com/pkgconf/pkgconf/archive/refs/tags/pkgconf-3.0.10.tar.gz",
-            .hash = "N-V-__8AAMmdFACqB8gROzqstVV9a67ZNubVtY4ZR-m1zRoD",
-            .lazy = true,
-        },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src", "LICENSE", "README.md" },
 }

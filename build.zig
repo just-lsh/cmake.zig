@@ -3,18 +3,10 @@ const builtin = @import("builtin");
 
 const root = @import("src/root.zig");
 
-pub const Configure = root.Configure;
-pub const ConfigureOptions = root.ConfigureOptions;
 pub const Define = root.Define;
-pub const addConfigure = root.addConfigure;
-
-pub const Build = root.Build;
-pub const BuildOptions = root.BuildOptions;
-pub const addBuild = root.addBuild;
-
-pub const Install = root.Install;
-pub const InstallOptions = root.InstallOptions;
-pub const addInstall = root.addInstall;
+pub const Options = root.Options;
+pub const Project = root.Project;
+pub const addProject = root.addProject;
 
 const zig_version: std.SemanticVersion.Range = .{
     .min = .{ .major = 0, .minor = 17, .patch = 0 },
@@ -68,8 +60,15 @@ pub fn build(b: *std.Build) !void {
     inline for ([_][]const u8{ "cc", "c++", "ar", "rc", "ranlib" }) |tool| {
         installZigToolWrapper(b, tool);
     }
+    installCmakeTools(b);
 
-    addExamples(b);
+    // The public API takes the cmake.zig dependency. Within this package that
+    // is this builder itself, which holds the same named paths and artifacts.
+    const self_dep = b.graph.create(std.Build.Dependency);
+    self_dep.* = .{ .builder = b };
+
+    addExamples(b, self_dep);
+    addTests(b, self_dep);
 }
 
 const Example = struct {
@@ -81,28 +80,21 @@ const examples = [_]Example{
     .{ .dir = "01-minimal", .exe = "minimal" },
 };
 
-fn addExamples(b: *std.Build) void {
+fn addExamples(b: *std.Build, self_dep: *std.Build.Dependency) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-
-    // The public API takes the cmake.zig dependency. Within this package that
-    // is this builder itself, which holds the same named paths and artifacts.
-    const self_dep = b.graph.create(std.Build.Dependency);
-    self_dep.* = .{ .builder = b };
 
     const examples_step = b.step("examples", "Build and install all examples");
 
     for (examples) |example| {
-        const configure = root.addConfigure(b, self_dep, .{
+        const project = root.addProject(b, self_dep, .{
+            .src_dir = b.path(b.fmt("examples/{s}", .{example.dir})),
             .target = target,
             .optimize = optimize,
-            .src_dir = b.path(b.fmt("examples/{s}", .{example.dir})),
         });
-        const build_ = root.addBuild(b, .{ .configure = configure });
-        const install = root.addInstall(b, .{ .build = build_ });
 
         const exe_name = b.fmt("{s}{s}", .{ example.exe, target.result.exeFileExt() });
-        const exe = install.install_dir.path(b, b.fmt("bin/{s}", .{exe_name}));
+        const exe = project.install_dir.path(b, b.fmt("bin/{s}", .{exe_name}));
 
         examples_step.dependOn(&b.addInstallBinFile(exe, exe_name).step);
 
@@ -111,6 +103,21 @@ fn addExamples(b: *std.Build) void {
             b.fmt("run-{s}", .{example.exe}),
             b.fmt("Run the {s} example", .{example.exe}),
         ).dependOn(&run.step);
+    }
+}
+
+/// Tests live in the root build. Fixtures go under `tests/<name>/`, and each
+/// test area adds one block below that wires its steps into `test_step`.
+fn addTests(b: *std.Build, self_dep: *std.Build.Dependency) void {
+    const test_step = b.step("test", "Run all tests");
+
+    // Unit tests of the compiled tools.
+    for ([_][]const u8{ "cmake-driver", "ninja-wrapper" }) |name| {
+        const unit_tests = b.addTest(.{
+            .name = name,
+            .root_module = self_dep.artifact(name).root_module,
+        });
+        test_step.dependOn(&b.addRunArtifact(unit_tests).step);
     }
 }
 
@@ -169,4 +176,26 @@ fn installZigToolWrapper(b: *std.Build, name: []const u8) void {
         .dest_dir = .{ .override = .{ .custom = "toolchain" } },
         .dest_sub_path = name,
     }).step);
+}
+
+/// Installs `cmake-driver` and `ninja-wrapper`, which `addProject` reaches
+/// through `dep.artifact`.
+fn installCmakeTools(b: *std.Build) void {
+    const config = b.addOptions();
+    // Tells the ninja-wrapper where the real Ninja is; set by cmake-driver.
+    config.addOption([]const u8, "ninja_env_var", "CMAKE_ZIG_NINJA");
+
+    for ([_][]const u8{ "cmake-driver", "ninja-wrapper" }) |name| {
+        const mod = b.createModule(.{
+            .root_source_file = b.path(b.fmt("src/bin/{s}.zig", .{name})),
+            .target = b.graph.host,
+            .optimize = .fast,
+        });
+        mod.addOptions("config", config);
+
+        const tool = b.addExecutable(.{ .name = name, .root_module = mod });
+        b.getInstallStep().dependOn(&b.addInstallArtifact(tool, .{
+            .dest_dir = .{ .override = .{ .custom = "toolchain" } },
+        }).step);
+    }
 }

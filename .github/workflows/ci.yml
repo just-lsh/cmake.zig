@@ -33,3 +33,5 @@ jobs:
           key: zig-pkg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('build.zig.zon') }}
 
       - run: zig build examples run-minimal --summary all
+
+      - run: zig build test --summary all
