@@ -119,6 +119,33 @@ fn addTests(b: *std.Build, self_dep: *std.Build.Dependency) void {
         });
         test_step.dependOn(&b.addRunArtifact(unit_tests).step);
     }
+
+    // Downstream consumer: `tests/consumer` builds the `tests/fixture-lib`
+    // package with `addProject()` and links it into a Zig executable.
+    test_step.dependOn(&addConsumerBuild(b, "consumer", &.{"test"}).step);
+}
+
+/// Runs `zig build <args>` in the `tests/consumer` package, which depends on
+/// this package by path. The nested build gets its own local cache, named
+/// `cache_name` inside this build's cache, and shares this build's `zig-pkg/`
+/// so the vendored CMake and Ninja are not unpacked again. It always runs;
+/// the nested build does its own caching.
+fn addConsumerBuild(
+    b: *std.Build,
+    cache_name: []const u8,
+    args: []const []const u8,
+) *std.Build.Step.Run {
+    const run = b.addSystemCommand(&.{ b.graph.zig_exe, "build" });
+    run.setName(b.fmt("consumer: zig build {s}", .{std.mem.join(b.allocator, " ", args) catch @panic("OOM")}));
+    run.setCwd(b.path("tests/consumer"));
+    run.addArgs(args);
+    run.addArg("--cache-dir");
+    run.addDirectoryArg2(std.Build.LazyPath.cache_root.path(b, cache_name), .{ .make_absolute = true });
+    run.addArg("--pkg-dir");
+    run.addDirectoryArg2(b.path("zig-pkg"), .{ .make_absolute = true });
+    run.has_side_effects = true;
+    run.expectExitCode(0);
+    return run;
 }
 
 fn vendorCmake(b: *std.Build) ?std.Build.LazyPath {

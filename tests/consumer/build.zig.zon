@@ -1,0 +1,11 @@
+.{
+    .name = .cmake_consumer,
+    .version = "0.0.0",
+    .fingerprint = 0x2786f1d3b817c8e2,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .cmake = .{ .path = "../.." },
+        .fixture_lib = .{ .path = "../fixture-lib" },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "main.zig" },
+}
