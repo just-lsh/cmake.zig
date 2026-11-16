@@ -1,6 +1,10 @@
 //! Configures, builds and installs a CMake project inside one workspace
 //! directory: `<workspace>/build` and `<workspace>/install`.
 //!
+//! The driver stops at the first failing phase and exits with that
+//! subprocess's exit status, so a failed project never produces a successful
+//! (and therefore cached) Run step. `build/` is kept for debugging.
+//!
 //! Command line, every path is a separate argument after its flag:
 //!
 //!   --cmake <path>          real CMake executable
@@ -41,10 +45,11 @@ pub fn main(init: std.process.Init) !void {
     const build_dir = try std.fs.path.join(arena, &.{ options.workspace, "build" });
     const install_dir = try std.fs.path.join(arena, &.{ options.workspace, "install" });
 
-    try prepare(io, init.environ_map, options);
+    try prepare(io, init.environ_map, options, build_dir, install_dir);
     try configure(arena, io, init.environ_map, options, build_dir, install_dir);
     try build(io, init.environ_map, options, build_dir);
     try install(io, init.environ_map, options, build_dir);
+    try finish(io, install_dir);
 }
 
 fn parseArgs(arena: std.mem.Allocator, args: []const []const u8) !Options {
@@ -108,10 +113,20 @@ fn missing(flag: []const u8) noreturn {
     std.process.fatal("missing required argument {s}", .{flag});
 }
 
-/// Creates the workspace and tells the ninja-wrapper, through the environment
-/// inherited by CMake and Ninja, where the real Ninja is.
-fn prepare(io: Io, environ_map: *std.process.Environ.Map, options: Options) !void {
-    try Io.Dir.cwd().createDirPath(io, options.workspace);
+/// Creates the workspace, removes `build/` and `install/` left behind by an
+/// earlier failed attempt, and tells the ninja-wrapper, through the
+/// environment inherited by CMake and Ninja, where the real Ninja is.
+fn prepare(
+    io: Io,
+    environ_map: *std.process.Environ.Map,
+    options: Options,
+    build_dir: []const u8,
+    install_dir: []const u8,
+) !void {
+    const cwd = Io.Dir.cwd();
+    try cwd.createDirPath(io, options.workspace);
+    try cwd.deleteTree(io, build_dir);
+    try cwd.deleteTree(io, install_dir);
     try environ_map.put(config.ninja_env_var, options.ninja);
 }
 
@@ -163,8 +178,24 @@ fn install(
     try runPhase(io, environ_map, "install", &.{ options.cmake, "--install", build_dir });
 }
 
+/// Fails unless the install phase created the install directory, which is
+/// what consumers of the project read from.
+fn finish(io: Io, install_dir: []const u8) !void {
+    const dir = Io.Dir.cwd().openDir(io, install_dir, .{}) catch |err| switch (err) {
+        error.FileNotFound, error.NotDir => std.process.fatal(
+            "cmake install succeeded but did not create the install directory {s}; " ++
+                "does the project define any install rules?",
+            .{install_dir},
+        ),
+        else => |e| return e,
+    };
+    dir.close(io);
+}
+
 /// Runs one CMake invocation with inherited stdio, so its output reaches
-/// whoever captures the driver's. Exits the driver if the invocation fails.
+/// whoever captures the driver's: CMake reports its errors on stderr, and the
+/// ninja-wrapper makes sure Ninja's do too. If the invocation fails, exits the
+/// driver with the invocation's exit status, or 1 if it did not exit normally.
 fn runPhase(
     io: Io,
     environ_map: *const std.process.Environ.Map,
@@ -177,7 +208,11 @@ fn runPhase(
         .stdin = .ignore,
     });
     const term = try child.wait(io);
-    if (!term.success()) {
-        std.process.fatal("cmake {s} failed: {f}", .{ phase, term });
-    }
+    if (term.success()) return;
+
+    std.log.err("cmake {s} failed: {f}", .{ phase, term });
+    std.process.exit(switch (term) {
+        .exited => |code| code,
+        else => 1,
+    });
 }

@@ -123,6 +123,57 @@ fn addTests(b: *std.Build, self_dep: *std.Build.Dependency) void {
     // Downstream consumer: `tests/consumer` builds the `tests/fixture-lib`
     // package with `addProject()` and links it into a Zig executable.
     test_step.dependOn(&addConsumerBuild(b, "consumer", &.{"test"}).step);
+
+    // --- driver-failure: a failing CMake project fails the build, every time.
+    // `tests/driver-failure` is a consumer package with one step per failing
+    // project, built by nested `zig build` invocations that must fail.
+    {
+        const cmake = self_dep.namedLazyPath("cmake");
+        const ninja = self_dep.namedLazyPath("ninja");
+        const cases = [_]struct { step: []const u8, stderr: []const []const u8 }{
+            .{ .step = "configure-fails", .stderr = &.{
+                "driver-failure: configure-fails marker",
+                "cmake configure failed",
+            } },
+            .{ .step = "install-fails", .stderr = &.{
+                "driver-failure: install-fails marker",
+                "cmake install failed",
+            } },
+            .{ .step = "no-install", .stderr = &.{
+                "did not create the install directory",
+            } },
+        };
+        for (cases) |case| {
+            // Two identical invocations sharing one cache: the second must run
+            // the driver again rather than report a cached success, so its
+            // diagnostics must appear again.
+            var previous: ?*std.Build.Step = null;
+            for (1..3) |invocation| {
+                const run = b.addSystemCommand(&.{ b.graph.zig_exe, "build", case.step });
+                run.setName(b.fmt("driver-failure {s} #{d}", .{ case.step, invocation }));
+                run.setCwd(b.path("tests/driver-failure"));
+                run.addArg("--cache-dir");
+                run.addDirectoryArg2(
+                    .{ .relative = .{ .base = .local_cache, .sub_path = "driver-failure" } },
+                    .{ .make_absolute = true },
+                );
+                // Reuse this package's unpacked dependencies; otherwise Zig
+                // unpacks globally cached CMake and Ninja again next to the
+                // nested build root.
+                run.addArg("--pkg-dir");
+                run.addDirectoryArg2(b.path("zig-pkg"), .{ .make_absolute = true });
+                // The nested build uses this build's CMake and Ninja.
+                run.addFileArg2(cmake, .{ .prefix = "-Dcmake=", .make_absolute = true });
+                run.addFileArg2(ninja, .{ .prefix = "-Dninja=", .make_absolute = true });
+                run.expectExitCode(1);
+                for (case.stderr) |expected| run.expectStdErrMatch(expected);
+                run.has_side_effects = true;
+                if (previous) |step| run.step.dependOn(step);
+                previous = &run.step;
+            }
+            test_step.dependOn(previous.?);
+        }
+    }
 }
 
 /// Runs `zig build <args>` in the `tests/consumer` package, which depends on
