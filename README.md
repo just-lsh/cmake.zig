@@ -16,8 +16,10 @@ it.
 - Nothing else. CMake 4.4.5 and Ninja 1.13.2 are fetched for the host on first
   use, unless you [supply your own](#using-a-different-cmake-or-ninja).
 
-Projects are built for the host. The `target` option is accepted but not yet
-applied, so cross compilation is not supported.
+Projects are built for the `target` you pass, including its CPU model and
+features. When its OS or architecture differs from the host, CMake is told the
+target system and configures as a cross build, so it does not try to run target
+binaries. The target's `dynamic_linker` and `ofmt` overrides are not forwarded.
 
 ## Install
 
@@ -88,7 +90,7 @@ on the CMake step automatically, so there is no step to wire up by hand.
 | Option       | Type                       | Meaning                                                             |
 | ------------ | -------------------------- | ------------------------------------------------------------------- |
 | `src_dir`    | `std.Build.LazyPath`       | Root of the CMake source package, holding `CMakeLists.txt`          |
-| `target`     | `std.Build.ResolvedTarget` | Accepted but not yet applied; projects are built for the host       |
+| `target`     | `std.Build.ResolvedTarget` | Target and CPU the project is compiled and linked for               |
 | `optimize`   | `std.lang.Optimize`        | Selects the CMake build type, see below                             |
 | `defines`    | `[]const Define`           | Passed as `-D<name>=<value>`, in order. Default: none               |
 | `extra_args` | `[]const []const u8`       | Appended verbatim to the configure command. Default: none           |
@@ -146,6 +148,7 @@ Do not modify a cached output after the fact.
   `zig ar`, `zig rc` and `zig ranlib` wrappers that `cmake.zig` compiles
 - The CMake and Ninja executables
 - The path of `src_dir`
+- The target triple and CPU, unless the target is the native default.
 - The configure arguments: the build type and flags from `optimize`, then
   `defines`, then `extra_args`
 

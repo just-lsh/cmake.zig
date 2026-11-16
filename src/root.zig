@@ -9,7 +9,9 @@ pub const Options = struct {
     /// Root of an immutable CMake source package. Only its path is part of the
     /// cache key, not its contents.
     src_dir: std.Build.LazyPath,
-    /// Accepted but not applied yet: projects are built for the host.
+    /// Target of the compiler wrappers. A non-native target is also handed to
+    /// CMake as the target system when its OS or architecture differs from the
+    /// host, making the build a cross build.
     target: std.Build.ResolvedTarget,
     optimize: std.lang.Optimize,
     /// Cache entries passed as `-D<name>=<value>`, in the given order.
@@ -51,6 +53,7 @@ pub fn addProject(
     const workspace = run.addOutputDirectoryArg2("workspace", .{ .make_absolute = true });
 
     addToolchainArgs(run, dep);
+    addTargetArgs(b, run, options.target);
     addOptimizeArgs(b, run, options.optimize);
 
     for (options.defines) |define| {
@@ -82,6 +85,82 @@ fn addToolchainArgs(
         run.addArgs(&.{ "--tool", variable });
         run.addArtifactArg2(dep.artifact(artifact), .{ .make_absolute = true });
     }
+}
+
+/// Passes a non-native target to the driver as the `-target` and `-mcpu`
+/// values of the C and C++ compiler wrappers, rendered from the query like
+/// Zig's own compile steps do. A native query adds nothing, so native builds
+/// keep the wrappers' native default.
+fn addTargetArgs(
+    b: *std.Build,
+    run: *std.Build.Step.Run,
+    target: std.Build.ResolvedTarget,
+) void {
+    if (target.query.isNative()) return;
+
+    run.addArgs(&.{
+        "--target",
+        target.query.zigTriple(b.allocator) catch @panic("OOM"),
+        "--cpu",
+        target.query.serializeCpuAlloc(b.allocator) catch @panic("OOM"),
+    });
+
+    // Setting CMAKE_SYSTEM_NAME makes CMake treat the build as a cross build:
+    // it stops trying to run the binaries it builds for checks.
+    const host = b.graph.host.result;
+    const result = target.result;
+    if (result.os.tag == host.os.tag and result.cpu.arch == host.cpu.arch) return;
+    addConfigureArg(run, b.fmt("-DCMAKE_SYSTEM_NAME:STRING={s}", .{cmakeSystemName(result)}));
+    addConfigureArg(run, b.fmt("-DCMAKE_SYSTEM_PROCESSOR:STRING={s}", .{cmakeSystemProcessor(result)}));
+}
+
+/// The `CMAKE_SYSTEM_NAME` of a target, `Generic` where CMake has no platform
+/// for it.
+fn cmakeSystemName(target: std.Target) []const u8 {
+    return switch (target.os.tag) {
+        .linux => "Linux",
+        .windows => "Windows",
+        .macos => "Darwin",
+        .ios => "iOS",
+        .tvos => "tvOS",
+        .watchos => "watchOS",
+        .visionos => "visionOS",
+        .freebsd => "FreeBSD",
+        .netbsd => "NetBSD",
+        .openbsd => "OpenBSD",
+        .dragonfly => "DragonFly",
+        .illumos => "SunOS",
+        .haiku => "Haiku",
+        .fuchsia => "Fuchsia",
+        .serenity => "SerenityOS",
+        .hurd => "GNU",
+        .wasi => "WASI",
+        .emscripten => "Emscripten",
+        else => "Generic",
+    };
+}
+
+/// The `CMAKE_SYSTEM_PROCESSOR` of a target, spelled the way CMake reports it
+/// natively on that OS, which is what project scripts match against.
+fn cmakeSystemProcessor(target: std.Target) []const u8 {
+    const arch = target.cpu.arch;
+    return switch (target.os.tag) {
+        .windows => switch (arch) {
+            .x86_64 => "AMD64",
+            .aarch64 => "ARM64",
+            .x86 => "X86",
+            .thumb => "ARM",
+            else => @tagName(arch),
+        },
+        .macos, .ios, .tvos, .watchos, .visionos => switch (arch) {
+            .aarch64 => "arm64",
+            else => @tagName(arch),
+        },
+        else => switch (arch) {
+            .x86 => "i686",
+            else => @tagName(arch),
+        },
+    };
 }
 
 fn addOptimizeArgs(

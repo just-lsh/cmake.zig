@@ -13,6 +13,8 @@
 //!   --source <dir>          CMake source directory, never written to
 //!   --workspace <dir>       directory receiving `build/` and `install/`
 //!   --tool <var> <path>     sets the cache entry `<var>:FILEPATH=<path>`
+//!   --target <triple>       optional Zig target of the C and C++ wrappers
+//!   --cpu <cpu>             optional `-mcpu` value of the C and C++ wrappers
 //!   --configure-arg <arg>   configure argument, passed on in the given order
 
 const std = @import("std");
@@ -27,6 +29,8 @@ const Options = struct {
     source: []const u8,
     workspace: []const u8,
     tools: []const Tool,
+    target: ?[]const u8,
+    cpu: ?[]const u8,
     configure_args: []const []const u8,
 
     const Tool = struct {
@@ -46,6 +50,7 @@ pub fn main(init: std.process.Init) !void {
     const install_dir = try std.fs.path.join(arena, &.{ options.workspace, "install" });
 
     try prepare(io, init.environ_map, options, build_dir, install_dir);
+    try exportTarget(init.environ_map, options);
     try configure(arena, io, init.environ_map, options, build_dir, install_dir);
     try build(io, init.environ_map, options, build_dir);
     try install(io, init.environ_map, options, build_dir);
@@ -59,6 +64,8 @@ fn parseArgs(arena: std.mem.Allocator, args: []const []const u8) !Options {
     var source: ?[]const u8 = null;
     var workspace: ?[]const u8 = null;
     var tools: std.ArrayList(Options.Tool) = .empty;
+    var target: ?[]const u8 = null;
+    var cpu: ?[]const u8 = null;
     var configure_args: std.ArrayList([]const u8) = .empty;
 
     var it: ArgIterator = .{ .args = args };
@@ -76,6 +83,10 @@ fn parseArgs(arena: std.mem.Allocator, args: []const []const u8) !Options {
         } else if (std.mem.eql(u8, flag, "--tool")) {
             const variable = it.value(flag);
             try tools.append(arena, .{ .variable = variable, .path = it.value(flag) });
+        } else if (std.mem.eql(u8, flag, "--target")) {
+            target = it.value(flag);
+        } else if (std.mem.eql(u8, flag, "--cpu")) {
+            cpu = it.value(flag);
         } else if (std.mem.eql(u8, flag, "--configure-arg")) {
             try configure_args.append(arena, it.value(flag));
         } else {
@@ -90,6 +101,8 @@ fn parseArgs(arena: std.mem.Allocator, args: []const []const u8) !Options {
         .source = source orelse missing("--source"),
         .workspace = workspace orelse missing("--workspace"),
         .tools = tools.items,
+        .target = target,
+        .cpu = cpu,
         .configure_args = configure_args.items,
     };
 }
@@ -128,6 +141,24 @@ fn prepare(
     try cwd.deleteTree(io, build_dir);
     try cwd.deleteTree(io, install_dir);
     try environ_map.put(config.ninja_env_var, options.ninja);
+}
+
+/// Hands the target to the C and C++ wrappers through the environment, which
+/// reaches every compiler invocation: CMake's compiler checks, try-compile
+/// projects and the Ninja build alike. Without a target, values inherited
+/// from the outer environment are cleared so the wrappers build natively.
+fn exportTarget(environ_map: *std.process.Environ.Map, options: Options) !void {
+    inline for (.{
+        .{ config.target_env_var, options.target },
+        .{ config.cpu_env_var, options.cpu },
+    }) |entry| {
+        const name, const value = entry;
+        if (value) |v| {
+            try environ_map.put(name, v);
+        } else {
+            _ = environ_map.swapRemove(name);
+        }
+    }
 }
 
 fn configure(

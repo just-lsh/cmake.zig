@@ -49,11 +49,19 @@ pub fn build(b: *std.Build) void {
             .imports = &.{.{ .name = "fixture", .module = header.createModule() }},
         }),
     });
-    exe.root_module.addObjectFile(project.install_dir.path(b, staticLibraryPath(b, target.result, "fixture")));
+    const library = staticLibraryPath(b, target.result, "fixture");
+    exe.root_module.addObjectFile(project.install_dir.path(b, library));
     b.installArtifact(exe);
+    // Installed as well so tests can inspect the CMake-built library.
+    b.getInstallStep().dependOn(&b.addInstallLibFile(
+        project.install_dir.path(b, library),
+        std.fs.path.basename(library),
+    ).step);
 
     const run = b.addRunArtifact(exe);
     run.expectStdOutEqual(expected_output);
+    // For a target the host cannot run, `test` only builds and links.
+    run.skip_foreign_checks = true;
     b.step("test", "Run the consumer and check it called into the fixture library").dependOn(&run.step);
 }
 

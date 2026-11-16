@@ -13,6 +13,11 @@ const zig_version: std.SemanticVersion.Range = .{
     .max = .{ .major = 0, .minor = 17, .patch = 1 },
 };
 
+/// Environment variables through which cmake-driver hands the requested target
+/// and CPU to the C and C++ compiler wrappers.
+const target_env_var = "CMAKE_ZIG_TARGET";
+const cpu_env_var = "CMAKE_ZIG_CPU";
+
 const supported_hosts = [_]std.Target.Query{
     .{ .cpu_arch = .x86_64, .os_tag = .linux },
     .{ .cpu_arch = .aarch64, .os_tag = .linux },
@@ -240,6 +245,118 @@ fn addTests(b: *std.Build, self_dep: *std.Build.Dependency) void {
         broken.expectExitCode(1);
         test_step.dependOn(&broken.step);
     }
+
+    // Cross-target builds: fixtures and checker under `tests/cross/`.
+    addCrossTests(b, self_dep, test_step);
+}
+
+/// From every host, the consumer builds the fixture for a target with another
+/// OS and for one with another architecture, links it into the downstream
+/// executable (running it only if the host can) and installs it for
+/// `check-archive`. All of them share one nested cache: building the OS target
+/// again after the architecture target must reuse its first entry. A CPU probe
+/// project checks that the requested CPU model reaches C and C++ compiles.
+fn addCrossTests(b: *std.Build, self_dep: *std.Build.Dependency, test_step: *std.Build.Step) void {
+    const host = b.graph.host.result;
+    const other_os: std.Target.Query = if (host.os.tag == .linux)
+        .{ .cpu_arch = host.cpu.arch, .os_tag = .windows, .abi = .gnu }
+    else
+        .{ .cpu_arch = host.cpu.arch, .os_tag = .linux, .abi = .musl };
+    const other_arch: std.Target.Query = .{
+        .cpu_arch = switch (host.cpu.arch) {
+            .x86_64 => .aarch64,
+            .aarch64 => .x86_64,
+            else => unreachable,
+        },
+        .os_tag = host.os.tag,
+        .abi = switch (host.os.tag) {
+            .linux => .musl,
+            .windows => .gnu,
+            else => null,
+        },
+    };
+
+    const checker = b.addExecutable(.{
+        .name = "check-archive",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/cross/check-archive.zig"),
+            .target = b.graph.host,
+        }),
+    });
+
+    const first = addCrossConsumerBuild(b, test_step, checker, other_os, "first");
+    const arch = addCrossConsumerBuild(b, test_step, checker, other_arch, "arch");
+    arch.step.dependOn(&first.step);
+    const again = addCrossConsumerBuild(b, test_step, checker, other_os, "again");
+    again.step.dependOn(&arch.step);
+    // The build summary marks the CMake Run step of the consumer as cached.
+    again.addArgs(&.{ "--summary", "all" });
+    again.expectStdErrMatch("cmake dependency cached");
+
+    const probe_target = b.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .linux,
+        .abi = .musl,
+        .cpu_model = .{ .explicit = &std.Target.x86.cpu.x86_64_v3 },
+    });
+    const probe = root.addProject(b, self_dep, .{
+        .src_dir = b.path("tests/cross/cpu-probe"),
+        .target = probe_target,
+        .optimize = .debug,
+    });
+    const probe_library = probe.install_dir.path(b, "lib/libprobe.a");
+    test_step.dependOn(&addArchiveCheck(b, checker, probe_library, probe_target.result).step);
+}
+
+/// Runs `zig build install test` in the consumer for `query`, in the nested
+/// cache shared by all cross builds, and adds a check of the installed library
+/// to `test_step`. `name` keeps the output of each build separate.
+fn addCrossConsumerBuild(
+    b: *std.Build,
+    test_step: *std.Build.Step,
+    checker: *std.Build.Step.Compile,
+    query: std.Target.Query,
+    name: []const u8,
+) *std.Build.Step.Run {
+    const triple = query.zigTriple(b.allocator) catch @panic("OOM");
+    const run = addConsumerBuild(b, "cross", &.{
+        "install",
+        "test",
+        b.fmt("-Dtarget={s}", .{triple}),
+    });
+    run.addArg("--prefix");
+    const prefix = run.addOutputDirectoryArg2(b.fmt("prefix-{s}", .{name}), .{ .make_absolute = true });
+
+    // None of the cross targets used here is MSVC, so CMake names the library
+    // the GNU way.
+    const library = prefix.path(b, "lib/libfixture.a");
+    test_step.dependOn(&addArchiveCheck(b, checker, library, b.resolveTargetQuery(query).result).step);
+    return run;
+}
+
+/// Runs `check-archive` on a static library that must be built for `target`.
+fn addArchiveCheck(
+    b: *std.Build,
+    checker: *std.Build.Step.Compile,
+    archive: std.Build.LazyPath,
+    target: std.Target,
+) *std.Build.Step.Run {
+    const machine: u32 = switch (target.ofmt) {
+        .elf => @backingInt(target.toElfMachine()),
+        .coff => @backingInt(target.toCoffMachine()),
+        .macho => @bitCast(switch (target.cpu.arch) {
+            .x86_64 => std.macho.CPU_TYPE_X86_64,
+            .aarch64 => std.macho.CPU_TYPE_ARM64,
+            else => unreachable,
+        }),
+        else => unreachable,
+    };
+
+    const run = b.addRunArtifact(checker);
+    run.addFileArg2(archive, .{});
+    run.addArgs(&.{ @tagName(target.ofmt), b.fmt("{d}", .{machine}) });
+    run.expectExitCode(0);
+    return run;
 }
 
 /// Runs `zig build <args>` in the `tests/consumer` package, which depends on
@@ -322,6 +439,8 @@ fn installZigToolWrapper(b: *std.Build, name: []const u8) void {
     const config = b.addOptions();
     config.addOption([]const u8, "zig_exe", b.graph.zig_exe);
     config.addOption([]const u8, "zig_tool", name);
+    config.addOption([]const u8, "target_env_var", target_env_var);
+    config.addOption([]const u8, "cpu_env_var", cpu_env_var);
     mod.addOptions("config", config);
 
     const tool = b.addExecutable(.{
@@ -343,6 +462,8 @@ const ninja_env_var = "CMAKE_ZIG_NINJA";
 fn installCmakeTools(b: *std.Build) void {
     const config = b.addOptions();
     config.addOption([]const u8, "ninja_env_var", ninja_env_var);
+    config.addOption([]const u8, "target_env_var", target_env_var);
+    config.addOption([]const u8, "cpu_env_var", cpu_env_var);
 
     for ([_][]const u8{ "cmake-driver", "ninja-wrapper" }) |name| {
         const mod = b.createModule(.{
