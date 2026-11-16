@@ -24,8 +24,13 @@ pub fn build(b: *std.Build) void {
         "define",
         "CMake cache entry NAME=VALUE for the fixture, repeatable, passed in the given order",
     ) orelse &.{};
+    // Forwarded to cmake.zig's own override options; unset keeps the vendored tools.
+    const cmake_dep = b.dependency("cmake", .{
+        .cmake = b.option(std.Build.LazyPath, "cmake", "CMake executable override for cmake.zig"),
+        .ninja = b.option(std.Build.LazyPath, "ninja", "Ninja executable override for cmake.zig"),
+    });
 
-    const project = cmake.addProject(b, b.dependency("cmake", .{}), .{
+    const project = cmake.addProject(b, cmake_dep, .{
         .src_dir = b.dependency("fixture_lib", .{}).path("."),
         .target = target,
         .optimize = optimize,

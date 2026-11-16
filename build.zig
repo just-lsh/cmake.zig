@@ -248,6 +248,11 @@ fn addTests(b: *std.Build, self_dep: *std.Build.Dependency) void {
 
     // Cross-target builds: fixtures and checker under `tests/cross/`.
     addCrossTests(b, self_dep, test_step);
+
+    // Cache behaviour: `tests/cache/runner.zig` drives the consumer through a
+    // sequence of nested builds sharing one cache and checks for each one
+    // whether the cmake-driver actually ran.
+    test_step.dependOn(&addCacheSuite(b, self_dep).step);
 }
 
 /// From every host, the consumer builds the fixture for a target with another
@@ -392,6 +397,48 @@ fn addNinjaWrapperRun(
     run.addArg(ninja_env_var);
     run.addFileArg2(self_dep.namedLazyPath("ninja"), .{ .make_absolute = true });
     run.addArtifactArg2(self_dep.artifact("ninja-wrapper"), .{ .make_absolute = true });
+    return run;
+}
+
+/// Runs the cache suite with the vendored (or overridden) CMake and Ninja and
+/// a forwarding CMake it passes as a changed `-Dcmake`. Its scratch copy of
+/// the package and its nested cache live in `cache-suite` inside this build's
+/// cache and are recreated on every run.
+fn addCacheSuite(b: *std.Build, self_dep: *std.Build.Dependency) *std.Build.Step.Run {
+    const config = b.addOptions();
+    config.addOption([]const u8, "forward_env_var", "CMAKE_ZIG_CACHE_SUITE_CMAKE");
+
+    const forward_cmake = b.addExecutable(.{
+        .name = "forward-cmake",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/cache/forward.zig"),
+            .target = b.graph.host,
+            .optimize = .debug,
+        }),
+    });
+    forward_cmake.root_module.addOptions("config", config);
+
+    const runner = b.addExecutable(.{
+        .name = "cache-suite",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/cache/runner.zig"),
+            .target = b.graph.host,
+            .optimize = .debug,
+        }),
+    });
+    runner.root_module.addOptions("config", config);
+
+    const run = b.addRunArtifact(runner);
+    run.setName("cache behaviour suite");
+    run.addArg(b.graph.zig_exe);
+    run.addDirectoryArg2(b.path("."), .{ .make_absolute = true });
+    run.addDirectoryArg2(b.path("zig-pkg"), .{ .make_absolute = true });
+    run.addDirectoryArg2(std.Build.LazyPath.cache_root.path(b, "cache-suite"), .{ .make_absolute = true });
+    run.addFileArg2(self_dep.namedLazyPath("cmake"), .{ .make_absolute = true });
+    run.addFileArg2(self_dep.namedLazyPath("ninja"), .{ .make_absolute = true });
+    run.addArtifactArg2(forward_cmake, .{ .make_absolute = true });
+    run.has_side_effects = true;
+    run.expectExitCode(0);
     return run;
 }
 
