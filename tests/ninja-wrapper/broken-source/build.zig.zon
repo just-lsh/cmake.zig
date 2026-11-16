@@ -1,0 +1,10 @@
+.{
+    .name = .broken_source,
+    .version = "0.0.0",
+    .fingerprint = 0xabc19a69e5105ac8,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .cmake = .{ .path = "../../.." },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "project" },
+}

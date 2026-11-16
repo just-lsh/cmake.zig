@@ -174,6 +174,72 @@ fn addTests(b: *std.Build, self_dep: *std.Build.Dependency) void {
             test_step.dependOn(previous.?);
         }
     }
+
+    // ninja-wrapper: stdio, exit status and failure diagnostics.
+    {
+        const ninja = self_dep.namedLazyPath("ninja");
+
+        // A Run step can only set an environment variable to a known string;
+        // `with-env` sets one to a lazy path, such as the real Ninja.
+        const with_env = b.addExecutable(.{
+            .name = "with-env",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tests/ninja-wrapper/with-env.zig"),
+                .target = b.graph.host,
+            }),
+        });
+
+        // `--version` behaves exactly like the real Ninja's.
+        const real_version = b.addRunFile(ninja);
+        real_version.addArg("--version");
+        const expected_version = real_version.captureStdOut(.{});
+
+        const version = addNinjaWrapperRun(b, self_dep, with_env);
+        version.setName("ninja-wrapper --version");
+        version.addArg("--version");
+        version.addCheck(.{ .expect_stdout_snapshot = expected_version });
+        version.expectStdErrEqual("");
+        version.expectExitCode(0);
+        test_step.dependOn(&version.step);
+
+        // A failing build keeps Ninja's exit status and replays its stdout,
+        // which holds the failed command's output, on stderr.
+        const failing = b.addWriteFiles();
+        _ = failing.add("build.ninja", b.fmt(
+            \\rule fail
+            \\  command = "{s}" cmake_zig_failing_command
+            \\build out: fail
+            \\
+        , .{b.graph.zig_exe}));
+
+        const failure = addNinjaWrapperRun(b, self_dep, with_env);
+        failure.setName("ninja-wrapper failing build");
+        failure.addArg("-C");
+        failure.addDirectoryArg2(failing.getDirectory(), .{ .make_absolute = true });
+        failure.expectStdErrMatch("FAILED: ");
+        failure.expectStdErrMatch("error: unknown command: cmake_zig_failing_command");
+        failure.expectExitCode(1);
+        test_step.dependOn(&failure.step);
+
+        // Through addProject() a compiler error reaches the stderr of a
+        // consumer's failing `zig build`. Its local cache and packages live in
+        // our cache; only the environment variable keeps `zig build` from also
+        // creating `.zig-cache/` in the consumer's directory.
+        const broken_dir = std.Build.LazyPath.cache_root.path(b, "tests/ninja-wrapper/broken-source");
+        const broken = b.addRunArtifact(with_env);
+        broken.setName("zig build tests/ninja-wrapper/broken-source");
+        broken.setCwd(b.path("tests/ninja-wrapper/broken-source"));
+        broken.addArg("ZIG_LOCAL_CACHE_DIR");
+        broken.addDirectoryArg2(broken_dir.path(b, "cache"), .{ .make_absolute = true });
+        broken.addArgs(&.{ b.graph.zig_exe, "build", "--pkg-dir" });
+        broken.addDirectoryArg2(broken_dir.path(b, "pkg"), .{ .make_absolute = true });
+        broken.addFileArg2(self_dep.namedLazyPath("cmake"), .{ .prefix = "-Dcmake=", .make_absolute = true });
+        broken.addFileArg2(ninja, .{ .prefix = "-Dninja=", .make_absolute = true });
+        broken.has_side_effects = true;
+        broken.expectStdErrMatch("error: cmake_zig_broken_source_diagnostic");
+        broken.expectExitCode(1);
+        test_step.dependOn(&broken.step);
+    }
 }
 
 /// Runs `zig build <args>` in the `tests/consumer` package, which depends on
@@ -196,6 +262,19 @@ fn addConsumerBuild(
     run.addDirectoryArg2(b.path("zig-pkg"), .{ .make_absolute = true });
     run.has_side_effects = true;
     run.expectExitCode(0);
+    return run;
+}
+
+/// Runs the ninja-wrapper through `with_env`, pointed at the real Ninja.
+fn addNinjaWrapperRun(
+    b: *std.Build,
+    self_dep: *std.Build.Dependency,
+    with_env: *std.Build.Step.Compile,
+) *std.Build.Step.Run {
+    const run = b.addRunArtifact(with_env);
+    run.addArg(ninja_env_var);
+    run.addFileArg2(self_dep.namedLazyPath("ninja"), .{ .make_absolute = true });
+    run.addArtifactArg2(self_dep.artifact("ninja-wrapper"), .{ .make_absolute = true });
     return run;
 }
 
@@ -256,12 +335,14 @@ fn installZigToolWrapper(b: *std.Build, name: []const u8) void {
     }).step);
 }
 
+/// Tells the ninja-wrapper where the real Ninja is; set by cmake-driver.
+const ninja_env_var = "CMAKE_ZIG_NINJA";
+
 /// Installs `cmake-driver` and `ninja-wrapper`, which `addProject` reaches
 /// through `dep.artifact`.
 fn installCmakeTools(b: *std.Build) void {
     const config = b.addOptions();
-    // Tells the ninja-wrapper where the real Ninja is; set by cmake-driver.
-    config.addOption([]const u8, "ninja_env_var", "CMAKE_ZIG_NINJA");
+    config.addOption([]const u8, "ninja_env_var", ninja_env_var);
 
     for ([_][]const u8{ "cmake-driver", "ninja-wrapper" }) |name| {
         const mod = b.createModule(.{
